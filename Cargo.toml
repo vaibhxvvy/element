@@ -1,0 +1,8 @@
+[package]
+name = "element"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.30"
+rfd = "0.15"
