@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Element
+GenericName=Launcher & Command Palette
+Comment=Fast local search, notes & command palette for Linux and Windows
+Exec=element %U
+Icon=element
+Terminal=false
+Type=Application
+Categories=Utility;Office;TextEditor;
+Keywords=launcher;search;notes;markdown;productivity;
+StartupWMClass=element
