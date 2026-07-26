@@ -6,9 +6,6 @@
   </picture>
 </p>
 
-<p align="center">
-  <img src="brandkit/misc/color-palette.png" alt="Element palette" width="360">
-</p>
 
 <p align="center">
   <strong>Rust-cast-style launcher · Notepad · Mind map · Local search</strong><br>
