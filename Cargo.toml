@@ -2,6 +2,7 @@
 name = "element"
 version = "0.2.0"
 edition = "2021"
+description = "A fast local launcher, notes, and search tool for Windows and Linux — starting life as a Rust native text editor."
 
 [dependencies]
 eframe = "0.30"
