@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 mod app;
+mod clipboard;
 mod config;
+mod database;
 mod editor;
 mod module;
 mod overlay;
@@ -10,21 +12,23 @@ use std::time::Duration;
 
 use global_hotkey::hotkey::{HotKey, Modifiers, Code};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use gpui::{App, Bounds, Entity, Focusable, WindowBounds, WindowOptions, px, size};
+use gpui::{App, Bounds, Focusable, WindowBounds, WindowOptions, px, size};
 use gpui::prelude::*;
 use gpui_platform::application;
 
 use app::ElementApp;
 use config::ElementConfig;
+use database::Database;
 use editor::buffer::TextBuffer;
 use editor::EditorView;
-use module::{Module, ModuleRegistry};
+use module::ModuleRegistry;
 use overlay::OverlayView;
 
 fn main() {
     application().run(|cx: &mut App| {
         let config = ElementConfig::load();
         let hotkey = config.hotkey.clone();
+        let db = Arc::new(Database::init());
 
         let icon = std::fs::read("brandkit/app-icons/icon-256.png")
             .ok()
@@ -49,58 +53,36 @@ fn main() {
                 let editor = cx.new(|cx| EditorView::new(TextBuffer::new(), cx));
                 let overlay = cx.new(|cx| OverlayView::new(module_registry.clone(), cx));
 
-                module_registry.register(
-                    Module::new(
-                        "/notes",
-                        "Notes",
-                        "Open a new note in the editor",
-                        Arc::new(
-                            |editor: Entity<EditorView>,
-                             _overlay: Entity<OverlayView>,
-                             _window: &mut gpui::Window,
-                             cx: &mut App| {
-                                let _ = editor.update(cx, |ed, _cx| {
-                                    ed.buffer =
-                                        TextBuffer::from_string("# New Note\n\n".into());
-                                });
-                            },
-                        ),
-                    ),
-                );
-
-                module_registry.register(
-                    Module::new(
-                        "/help",
-                        "Help",
-                        "Show available commands",
-                        Arc::new(
-                            |editor: Entity<EditorView>,
-                             _overlay: Entity<OverlayView>,
-                             _window: &mut gpui::Window,
-                             cx: &mut App| {
-                                let _ = editor.update(cx, |ed, _cx| {
-                                    ed.buffer = TextBuffer::from_string(
-                                        "# Element Commands\n\n\
-                                         /notes  - Open a new note\n\
-                                         /help   - Show this help\n\n\
-                                         Ctrl+N  - New file\n\
-                                         Ctrl+O  - Open file\n\
-                                         Ctrl+S  - Save\n\
-                                         Ctrl+F  - Find\n\
-                                         F3      - Find next\n\
-                                         Ctrl+Q  - Quit\n\
-                                         Alt+Space - Toggle overlay\n"
-                                            .into(),
-                                    );
-                                });
-                            },
-                        ),
-                    ),
+                module::register_builtin_modules(
+                    &module_registry,
+                    editor.clone(),
+                    overlay.clone(),
+                    db.clone(),
                 );
 
                 overlay.update(cx, |o, _cx| {
                     o.set_handles(editor.clone(), overlay.clone());
                 });
+
+                if config.clipboard.enabled {
+                    let (clip_tx, clip_rx) = std::sync::mpsc::channel();
+                    clipboard::start_clipboard_monitor(
+                        Database::init(),
+                        clip_tx,
+                    );
+                    let overlay_clip = overlay.clone();
+                    window.spawn(cx, async move |cx| {
+                        loop {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(100))
+                                .await;
+                            while let Ok(_text) = clip_rx.try_recv() {
+                                let _ = overlay_clip.update(cx, |_o, _cx| {});
+                            }
+                        }
+                    })
+                    .detach();
+                }
 
                 let overlay_handle = overlay.clone();
                 window.spawn(cx, async move |cx| {

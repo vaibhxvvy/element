@@ -1,6 +1,6 @@
 # Element — Living State Document
 
-> **Last updated:** 2026-07-26 (Phase 2c — interactive find, brand, modules)
+> **Last updated:** 2026-07-26 (Phase 3 — SQLite DB, clipboard, calc, emoji)
 > **Purpose:** Single source of truth for architecture decisions, project state, and next moves. Must be kept accurate after every session.
 
 ---
@@ -9,7 +9,7 @@
 
 Build **Element**: a Raycast-style global launcher + local knowledge tool for Windows and Linux, written in Rust with GPUI for GPU-accelerated UI. The text editor is Phase 0 — a foundation module, not the product.
 
-Core interaction model: global hotkey → floating frosted-glass overlay → search-as-you-type across files/notes/nodes/apps + slash commands route to built-in modules (`/notes`, `/timer`, `/mindmap`, `/ask`) via a trait-based registry.
+Core interaction model: global hotkey → floating frosted-glass overlay → search-as-you-type across files/notes/nodes/apps + slash commands route to built-in modules (`/notes`, `/calc`, `/cbhist`, `/emoji`, `/help`, `/savenote`, `/noteslist`) via a struct-based registry with closure activation.
 
 ---
 
@@ -21,7 +21,11 @@ Core interaction model: global hotkey → floating frosted-glass overlay → sea
 | Windowing | Built into `gpui-unofficial` | Platform backends included: Windows (Win32 + DirectWrite), Linux (x11 + wayland features), macOS (font-kit). |
 | Global Hotkey | `global-hotkey = "0.5"` (tauri-apps) | Default `Alt+Space`, configurable via `ElementConfig.hotkey`. Parsed from string: `Alt+Space`, `Super+Space` (Windows key), `Ctrl+Shift+F`, etc. Polled via `AsyncWindowContext.background_executor().timer()`. Wayland support deferred. |
 | Brand | Element, `#6D4AFA` primary / `#08060D` ink / `#FDFAFE` core white | Full brandkit at `brandkit/`. |
-| Persistence | `serde` + `serde_json` → `~/.element/config.json` | Settings and module state. |
+| Persistence | `serde` + `serde_json` → `~/.element/config.json` | Config settings. |
+| SQLite | `rusqlite = "0.31"` (bundled) | `Database` struct with own `Connection`. Clipboard history and notes stored in `~/.element/element.db`. Separate connection per thread. |
+| Clipboard | `arboard = "3.3"` | Monitored via background thread polling every 500ms. Stores text entries in SQLite via `ClipBoardContentType`. |
+| Calculator | `evalexpr = "11"` | `/calc` module evaluates math expressions. Replaces `x` with `*`, `÷` with `/`. |
+| Emoji | `emojis = "0.6"` | `/emoji` module searches by name or shortcode. |
 | Migration Strategy | **In-place rewrite** | Replace egui/eframe code directly with GPUI. No parallel binary targets. |
 | Module System | `struct Module` with `activate: Arc<dyn Fn(...)>` closure | `ModuleRegistry` uses `RefCell<HashMap<String, Module>>` for interior mutability via `Arc`. Modules registered with `registry.register(Module::new(...))`. |
 | Glass Effect | Colored semi-transparent `div` + shadow first; GPU texture blur via GPUI shader later | Deferred. DWM/kwin behind-window blur detected at runtime. |
@@ -38,14 +42,17 @@ Core interaction model: global hotkey → floating frosted-glass overlay → sea
 src/
 ├── main.rs         # gpui_platform::application() entry point
 ├── app.rs          # ElementApp shell: holds editor + overlay + config
-├── module.rs       # Module trait + HashMap<&'static str, Box<dyn Module>>
-├── overlay.rs      # Floating command palette (placeholder, not yet wired)
-├── config.rs       # Theme (Dark/Light), settings, serde persistence
-└── editor/
-    ├── mod.rs      # Re-exports EditorView
-    ├── buffer.rs   # TextBuffer: text, cursor, open/save, dirty tracking
-    ├── view.rs     # EditorView: GPUI Render, FocusHandle, key input, status bar
-    └── find.rs     # FindState: find-next, match counting, cursor positioning
+├── config.rs       # Theme colors, clipboard config, debounce, serde persistence
+├── database.rs     # SQLite init, clipboard_entries + notes tables, CRUD
+├── clipboard.rs    # Background thread polling arboard every 500ms, stores to DB
+├── module.rs       # Module struct + Registry + register_builtin_modules()
+├── overlay.rs      # Floating command palette, keyboard input, results list
+├── editor/
+│   ├── mod.rs      # Re-exports EditorView
+│   ├── buffer.rs   # TextBuffer: text, cursor, open/save, dirty tracking
+│   ├── view.rs     # EditorView: GPUI Render, FocusHandle, key input, status bar
+│   └── find.rs     # FindState: find-next/find-prev, match highlighting
+└── brandkit/       # Brand assets: icons, favicon, wordmark, social
 ```
 
 ### Key GPUI API patterns discovered
@@ -96,7 +103,23 @@ Global hotkey pressed (Alt+Space)
 - **Phase 2 — Text editing in GPUI**:
   - Full text editing in GPUI with keyboard input, cursor, status bar, file dialogs, find bar display, window icon.
   - Committed as `c3a0fb6`.
-- **Phase 2c — Interactive find bar + brand + /notes module** (this session):
+- **Phase 2c — Interactive find bar + brand + /notes module**:
+  - Interactive find bar, brand colors, match highlighting.
+  - Module system rewritten to struct-based with closure activation.
+  - `/notes` and `/help` modules.
+  - Committed as `70b7336`.
+- **Phase 3 — SQLite database, clipboard history, calculator, emoji search** (this session):
+  - **`database.rs`**: SQLite via `rusqlite` (bundled). Two tables: `clipboard_entries` (content_type, text_content, created_at) and `notes` (title, content, updated_at). Separate `Database::init()` per thread (each gets its own connection).
+  - **`clipboard.rs`**: `std::thread::spawn` background polling of `arboard::Clipboard` every 500ms. Detects changes, stores text entries in SQLite, sends copy event through `std::sync::mpsc::Sender` to the GPUI main loop.
+  - **Config upgrade**: `ThemeColors` (primary/ink/core/muted/surface/border as hex strings), `ClipboardConfig` (enabled, poll_interval_ms, max_entries), `debounce_delay_ms`, `window_width`, `window_height`. Hex color helpers: `primary()`, `ink()`, `core()`, `muted()`, `surface()`, `border()` — each returns `u32` for `rgb()`.
+  - **`/calc` module**: Uses `evalexpr::eval()` to evaluate math expressions in the editor text. Replaces `x` with `*` and `÷` with `/`. Result appended as `= value`.
+  - **`/cbhist` module**: Loads last 30 clipboard entries from SQLite, displays as numbered list in editor.
+  - **`/emoji` module**: Iterates `emojis::iter()`, matches by name or shortcode. Displays emoji + shortcode in editor (up to 2000 chars).
+  - **`/savenote` module**: Saves current editor content as a persistent note in SQLite. Uses first line as title.
+  - **`/noteslist` module**: Shows all saved notes from SQLite.
+  - **`register_builtin_modules()`**: New function in `module.rs` that registers all 7 built-in modules. Takes `(registry, editor_handle, overlay_handle, db: Arc<Database>)`.
+  - **Dependencies added**: `rusqlite`, `arboard`, `evalexpr`, `emojis`, `crossbeam-channel`.
+  - Inspired by `RustCast` (github.com/MystikoLab/rustcast) — an Iced-based Raycast alternative for macOS.
   - Default: Alt+Space (configurable via `ElementConfig.hotkey` string, supports Windows key via `super` prefix).
   - Implemented via `global-hotkey` crate v0.5 (tauri-apps).
   - Registered on startup via `GlobalHotKeyManager::register()`.
@@ -126,11 +149,12 @@ Global hotkey pressed (Alt+Space)
 
 ## 5. Next Moves (in order)
 
-1. **Phase 3 — SQLite index**: Add `rusqlite` for local search index of notes/files.
-2. **Phase 4 — Mind map view**: Add canvas-based mind map module.
-3. **Module stubs**: Implement `/timer`, `/calc`, `/ask` modules.
-4. **Save dialog**: Wire Save/Discard/Cancel buttons with keyboard shortcuts.
-5. **Match navigation**: Auto-scroll editor to show the current find match.
+1. **File search module (`/files`)**: Index files in `search_dirs` using SQLite FTS5, search by name.
+2. **Web search**: Type `?query` to open browser search (like RustCast's Google search).
+3. **Spotify/Media control module**: Cross-platform media control via DBus (Linux) or `windows-rs`.
+4. **Mind map view**: Canvas-based mind map module.
+5. **Settings panel**: In-app settings UI for hotkey, theme, clipboard config.
+6. **System tray icon**: Minimize to tray with `tray-icon` crate.
 
 ---
 
@@ -142,6 +166,8 @@ Global hotkey pressed (Alt+Space)
 | No `EditableText` widget in GPUI | Built interactive find bar via `on_key_down` routing with `show_find` flag |
 | Global hotkey registration fails | Log warning; accept remapping via `config.rs` |
 | Window blur unsupported | Opaque background; runtime detection, graceful degrade |
+| SQLite connection not `Send` | Clipboard thread creates its own `Database::init()` connection |
+| `arboard` may fail on Wayland | Graceful fallback — clipboard monitoring disabled if init fails |
 
 ---
 
@@ -149,6 +175,7 @@ Global hotkey pressed (Alt+Space)
 
 - **Repository:** `https://github.com/vaibhxvvy/element`
 - **GPUI source:** `https://github.com/vaibhxvvy/element` (Zed mirror at tag v1.11.3)
+- **Reference project:** `https://github.com/MystikoLab/rustcast` — Iced-based Raycast alternative for macOS (971★). Borrowed patterns: SQLite persistence, clipboard polling, calculator, config-driven themes, platform abstraction.
 - **Global hotkey crate:** `https://crates.io/crates/global-hotkey`
 - **Brandkit:** `brandkit/README.md`
 - **Phase 0 code:** `src/main.rs` (pre-rewrite, 442 lines, egui/eframe)
