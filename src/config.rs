@@ -29,7 +29,7 @@ impl Default for ElementConfig {
             window_width: 920.0,
             window_height: 660.0,
             word_wrap: false,
-            hotkey: "Ctrl+Space".into(),
+            hotkey: "Alt+Space".into(),
         }
     }
 }

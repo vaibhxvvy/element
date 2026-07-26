@@ -1,40 +1,74 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-pub trait Module {
-    fn command(&self) -> &str;
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
+use gpui::{App, Entity, Window};
+
+use crate::editor::EditorView;
+use crate::overlay::OverlayView;
+
+pub type ActivateFn =
+    Arc<dyn Fn(Entity<EditorView>, Entity<OverlayView>, &mut Window, &mut App)>;
+
+pub struct Module {
+    pub command: String,
+    pub name: String,
+    pub description: String,
+    pub activate: ActivateFn,
+}
+
+impl Module {
+    pub fn new(
+        command: &str,
+        name: &str,
+        description: &str,
+        activate: ActivateFn,
+    ) -> Self {
+        Self {
+            command: command.into(),
+            name: name.into(),
+            description: description.into(),
+            activate,
+        }
+    }
 }
 
 pub struct ModuleRegistry {
-    modules: HashMap<&'static str, Box<dyn Module>>,
+    modules: RefCell<HashMap<String, Module>>,
 }
 
 impl ModuleRegistry {
     pub fn new() -> Self {
         Self {
-            modules: HashMap::new(),
+            modules: RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn register(&mut self, module: Box<dyn Module>) {
-        let command = module.command().to_string();
-        self.modules.insert(command.leak(), module);
-    }
-
-    pub fn get(&self, command: &str) -> Option<&Box<dyn Module>> {
-        self.modules.get(command)
-    }
-
-    pub fn all_commands(&self) -> Vec<&str> {
-        self.modules.keys().copied().collect()
-    }
-
-    pub fn search(&self, prefix: &str) -> Vec<(&str, &str, &str)> {
+    pub fn register(&self, module: Module) {
         self.modules
-            .iter()
-            .filter(|(cmd, _)| cmd.starts_with(prefix))
-            .map(|(cmd, m)| (*cmd, m.name(), m.description()))
+            .borrow_mut()
+            .insert(module.command.clone(), module);
+    }
+
+    pub fn search(&self, prefix: &str) -> Vec<(String, String, String)> {
+        self.modules
+            .borrow()
+            .values()
+            .filter(|m| m.command.starts_with(prefix))
+            .map(|m| (m.command.clone(), m.name.clone(), m.description.clone()))
             .collect()
+    }
+
+    pub fn activate(
+        &self,
+        command: &str,
+        editor: Entity<EditorView>,
+        overlay: Entity<OverlayView>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(module) = self.modules.borrow().get(command) {
+            (module.activate)(editor, overlay, window, cx);
+        }
     }
 }

@@ -1995,6 +1995,7 @@ dependencies = [
  "keyboard-types",
  "objc",
  "once_cell",
+ "serde",
  "thiserror 1.0.69",
  "windows-sys 0.52.0",
  "x11-dl",
