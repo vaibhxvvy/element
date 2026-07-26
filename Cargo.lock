@@ -1434,8 +1434,10 @@ dependencies = [
  "global-hotkey",
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",
+ "image",
  "serde",
  "serde_json",
+ "tinyfiledialogs",
 ]
 
 [[package]]
@@ -2030,7 +2032,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.19",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2559,7 +2561,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5382,6 +5384,16 @@ dependencies = [
  "arrayref",
  "bytemuck",
  "strict-num",
+]
+
+[[package]]
+name = "tinyfiledialogs"
+version = "3.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e25fa0bc43a6566e2cc6d7ac96df3fa5a57beba34445bead1b368ba8fe9ca568"
+dependencies = [
+ "cc",
+ "libc",
 ]
 
 [[package]]
