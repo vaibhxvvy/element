@@ -6,10 +6,9 @@
   </picture>
 </p>
 
-
 <p align="center">
-  <strong>Floating command palette · Module system · Global hotkey</strong><br>
-  <em>for Windows — built natively in Rust with iced.</em>
+  <strong>Floating search bar · Unified launcher · Global hotkey</strong><br>
+  <em>for Windows — built natively in Rust with Slint.</em>
 </p>
 
 <p align="center">
@@ -20,56 +19,46 @@
 
 ---
 
-Element is a global hotkey-activated floating launcher. Press **Alt+Space** to summon a command palette anywhere, type `/` to browse modules (calculator, emoji picker, notes), and press Enter to execute. It runs as a background daemon — zero UI until you need it.
+Element is a global hotkey-activated floating search bar for Windows. Press **Alt+Space** to summon a search bar anywhere, type your query, and press Enter. It runs as a background daemon — zero UI until you need it.
 
 ## Features
 
-- **Global hotkey** — Toggle the overlay with `Alt+Space` (configurable). Uses `global-hotkey` crate for proper OS-level registration; falls back to polling if the hotkey is already taken.
-- **Debounced search** — Module results appear 150ms after you stop typing (configurable via `config.json`).
-- **Slash-command modules** — Type `/` to see available modules. Built-in:
-  - `/calc` — Evaluate arithmetic expressions
-  - `/emoji` — Search and copy emojis
-  - `/savenote` — Save a note
-  - `/listnotes` — Browse saved notes
-  - `/searchnotes` — Full-text search notes
-  - `/getnote` — Read a note by ID
-  - `/help` — Display available commands
-- **Always-on-top overlay** — Transparent window, centered on screen, rounded corners, no decorations.
-- **Resident daemon** — Uses `iced::daemon()`. Background process with zero windows at boot; window opens/closes on each hotkey press (no hide/show).
-- **Minimum dependencies** — No JavaScript, no browser, no Electron.
+- **Global hotkey** — Toggle the overlay with `Alt+Space` (configurable). Uses a low-level keyboard hook (`WH_KEYBOARD_LL`) for reliable capture across all apps.
+- **App launcher** — Searches installed applications from the Start Menu (`*.lnk` files in `%ProgramData%` and `%APPDATA%`).
+- **Web search** — Anything that doesn't match a local action opens your default browser with the configured search URL.
+- **Calculator** — Type a math expression (`2+2`, `(3*4)/2`) and press Enter to copy the result to your clipboard.
+- **Emoji search** — Type `emoji` or `:` followed by a term to find and copy emojis.
+- **Clipboard history** — Type `cbhist` or `clip` to browse recent clipboard entries.
+- **Always-on-top overlay** — Acrylic-blur backdrop, centered, no decorations.
 
 ## Architecture
 
 ```
-src/
-├── main.rs         # iced daemon entry point, subscription setup
-├── app.rs          # State, update, view, hotkey management, debounce
-├── module.rs       # Module trait + registry, built-in modules
-├── style.rs        # Colors, button/container styles
-├── config.rs       # JSON config (hotkey, dimensions, debounce)
-├── database.rs     # SQLite-backed note storage
-└── clipboard.rs    # Clipboard monitor (unused currently)
+element/
+├── src/
+│   ├── main.rs       # Slint entry point, hotkey hook, timer polling
+│   ├── app.rs        # SearchEngine — app scan, calc, emoji, clipboard, web search
+│   ├── config.rs     # JSON config (hotkey, search URL, window size)
+│   └── database.rs   # SQLite-backed clipboard history
+├── ui/
+│   └── main.slint    # Slint UI — search bar + results list
+├── build.rs          # slint-build compilation
+└── Cargo.toml
 ```
+
+### Search system
+
+Every query runs through `SearchEngine::search()` which checks, in order:
+
+1. **Calculator** — if the query looks like a math expression, evaluate and show the result.
+2. **Emoji** — if the query starts with `emoji` or `:`, search the emoji database.
+3. **Clipboard** — if the query is `cbhist` or starts with `clip`, load recent clipboard entries.
+4. **Apps** — fuzzy-match installed application names.
+5. **Web search** — always present as a fallback.
 
 ### Hotkey system
 
-Two layers, tried in order:
-
-1. **`global-hotkey` crate** — calls `RegisterHotKey` (Windows) or the OS equivalent. Clean, responsive, preferred path.
-2. **Polling fallback** — if registration fails (e.g., another app already owns the combination), falls back to `GetAsyncKeyState` on a background thread with an mpsc channel.
-
-### Module trait
-
-```rust
-trait Module {
-    fn command(&self) -> &str;
-    fn name(&self) -> &str;
-    fn search(&self, query: &str) -> Vec<(String, String, String)>;
-    fn activate(&self, input: &str) -> Option<String>;
-}
-```
-
-Modules register themselves with `ModuleRegistry` at boot. The palette discovers them dynamically.
+Uses `SetWindowsHookExW` with `WH_KEYBOARD_LL` (low-level keyboard hook) to capture the configured hotkey combination. A flag is set on capture and polled by a Slint `Timer` every 200ms to toggle the window.
 
 ## Installation
 
@@ -84,7 +73,7 @@ The binary runs silently in the background. Press your hotkey to summon the over
 ### Requirements
 
 - Rust 1.77 or newer
-- Windows (the app is Windows-only; other platforms are stubs)
+- Windows
 
 ## Configuration
 
@@ -94,19 +83,27 @@ Config is stored at `%USERPROFILE%\.element\config.json` and auto-created on fir
 {
   "hotkey": "Alt+Space",
   "window_width": 580,
-  "window_height": 420,
-  "debounce_delay_ms": 150
+  "window_height": 48,
+  "debounce_delay_ms": 150,
+  "search_url": "https://duckduckgo.com/?q=%s",
+  "search_dirs": []
 }
 ```
 
-Hotkey format: modifier keys joined by `+`. Supported: `Alt`, `Ctrl`/`Control`, `Shift`, `Win`/`Super`/`Cmd`/`Meta` and a final key (`Space`, etc.).
+| Key | Description |
+|-----|-------------|
+| `hotkey` | Key combination — modifiers joined by `+`. Supported: `Alt`, `Ctrl`/`Control`, `Shift`, `Space`, etc. |
+| `window_width` | Width of the search bar in pixels |
+| `window_height` | Height of the search bar in pixels |
+| `debounce_delay_ms` | Delay before search triggers after typing stops |
+| `search_url` | URL template for web searches (`%s` is replaced with the query) |
+| `search_dirs` | Additional directories to scan for applications |
 
 ## Usage
 
 | Action | Input |
 |--------|-------|
-| Toggle overlay | `Alt+Space` (or your configured hotkey) |
-| Browse modules | Type `/` |
+| Toggle overlay | `Alt+Space` (or configured hotkey) |
 | Select result | Click or arrow keys + Enter |
 | Close overlay | `Escape` |
 
