@@ -297,8 +297,10 @@ fn cached_icon(lnk_path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, u32, u32)>
         }
     }
 
+    let info = resolve_lnk_strings(lnk_path);
+
     // Try to find a high-quality icon from the app's installation directory
-    if let Some(info) = resolve_lnk_strings(lnk_path) {
+    if let Some(ref info) = info {
         if !info.working_dir.is_empty() {
             if let Some(icon) = find_icon_from_app_dir(&info.working_dir) {
                 save_icon_cache(cache_dir, lnk_path, &icon.0, icon.1, icon.2);
@@ -316,7 +318,21 @@ fn cached_icon(lnk_path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, u32, u32)>
         }
     }
 
-    if let Some(icon) = shell_item_icon(lnk_path, 32) {
+    // Extract icon from the real target executable (not the .lnk)
+    let icon_path = info
+        .as_ref()
+        .and_then(|i| {
+            if i.target_path.is_empty() {
+                None
+            } else {
+                Some(i.target_path.as_str())
+            }
+        })
+        .map(Path::new)
+        .filter(|p| p.is_file())
+        .unwrap_or(lnk_path);
+
+    if let Some(icon) = shell_item_icon(icon_path, 32) {
         save_icon_cache(cache_dir, lnk_path, &icon.0, icon.1, icon.2);
         Some(icon)
     } else {
@@ -325,6 +341,7 @@ fn cached_icon(lnk_path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, u32, u32)>
 }
 
 struct LnkStrings {
+    target_path: String,
     working_dir: String,
     icon_location: String,
 }
@@ -347,10 +364,28 @@ fn resolve_lnk_strings(lnk_path: &Path) -> Option<LnkStrings> {
         offset += 2 + sz;
     }
 
-    // LinkInfo
+    // LinkInfo — extract local base path (real target executable)
+    let mut target_path = String::new();
     if flags & 2 != 0 {
-        let sz = u32::from_le_bytes(data.get(offset + 4..offset + 8)?.try_into().ok()?) as usize;
-        offset += sz;
+        let link_info_start = offset;
+        let link_info_size =
+            u32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?) as usize;
+        if link_info_start + link_info_size <= data.len() {
+            let local_base_path_off =
+                u32::from_le_bytes(data.get(link_info_start + 0x10..link_info_start + 0x14)?.try_into().ok()?) as usize;
+            if local_base_path_off > 0 && local_base_path_off + 2 < link_info_size {
+                let path_start = link_info_start + local_base_path_off;
+                let path_end = data[path_start..]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(link_info_size.saturating_sub(local_base_path_off));
+                if path_end > 0 {
+                    let path_bytes = &data[path_start..path_start + path_end];
+                    target_path = String::from_utf8_lossy(path_bytes).into_owned();
+                }
+            }
+        }
+        offset += link_info_size;
     }
 
     // StringData
@@ -383,6 +418,7 @@ fn resolve_lnk_strings(lnk_path: &Path) -> Option<LnkStrings> {
     }
 
     Some(LnkStrings {
+        target_path,
         working_dir,
         icon_location,
     })
