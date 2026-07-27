@@ -130,7 +130,7 @@ impl SearchEngine {
 
         let apps = self.apps.lock().unwrap();
         for app in apps.iter() {
-            if app.name.to_lowercase().contains(&q) {
+            if fuzzy_match(&app.name, &q) {
                 results.push(SearchResult {
                     title: app.name.clone(),
                     subtitle: "App".into(),
@@ -186,6 +186,25 @@ impl SearchEngine {
 
 fn config_or_default(config: &str, default: &str) -> String {
     if config.is_empty() { default.into() } else { config.into() }
+}
+
+fn fuzzy_match(name: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return false;
+    }
+    if name.to_lowercase().contains(query) {
+        return true;
+    }
+    let qb = query.as_bytes();
+    let nb = name.to_lowercase();
+    let nb = nb.as_bytes();
+    let mut qi = 0;
+    for &b in nb {
+        if qi < qb.len() && b == qb[qi] {
+            qi += 1;
+        }
+    }
+    qi == qb.len()
 }
 
 fn icon_cache_dir() -> std::path::PathBuf {
@@ -350,6 +369,12 @@ fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, i32, i32)> {
             rgba.push(pixel[1]); // G
             rgba.push(pixel[0]); // B
             rgba.push(pixel[3]); // A
+        }
+
+        // skip all-white icons (failed extraction)
+        let all_white = rgba.chunks_exact(4).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255);
+        if all_white {
+            return None;
         }
 
         Some((rgba, size, size))

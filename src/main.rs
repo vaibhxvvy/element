@@ -37,7 +37,7 @@ fn main() {
     let timer = slint::Timer::default();
     timer.start(
         slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_millis(50),
         move || {
             if let Some(ui) = ui_hot.upgrade() {
                 if HOTKEY_TRIGGERED.swap(false, Ordering::Relaxed) {
@@ -46,12 +46,12 @@ fn main() {
                         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
                     } else {
                         engine_hot.refresh_apps();
-                        center_window(win_w, win_h);
+                        WINDOW_VISIBLE.store(true, Ordering::Relaxed);
                         ui.window().show().ok();
                         ui.set_input_text(String::new().into());
                         ui.set_selected_index(-1);
                         ui.set_results(Rc::new(VecModel::from(vec![])).into());
-                        WINDOW_VISIBLE.store(true, Ordering::Relaxed);
+                        center_window(win_w, win_h);
                     }
                 }
                 if ESCAPE_TRIGGERED.swap(false, Ordering::Relaxed) {
@@ -148,30 +148,31 @@ fn main() {
     ui.run().unwrap();
 }
 
+fn get_window_hwnd() -> Option<isize> {
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
+        fn GetWindowThreadProcessId(h: isize, p: *mut u32) -> u32;
+    }
+    let mut hwnd = None;
+    unsafe {
+        extern "system" fn ep(h: isize, l: isize) -> i32 {
+            let mut pid: u32 = 0;
+            unsafe { GetWindowThreadProcessId(h, &mut pid); }
+            if pid == std::process::id() {
+                unsafe { *(l as *mut Option<isize>) = Some(h); }
+                return 0;
+            }
+            1
+        }
+        EnumWindows(ep, &mut hwnd as *mut _ as isize);
+    }
+    hwnd
+}
+
 #[cfg(target_os = "windows")]
 fn center_window(w: i32, h: i32) {
-    use std::sync::OnceLock;
-    static HWND: OnceLock<isize> = OnceLock::new();
-    if HWND.get().is_none() {
-        #[link(name = "user32")]
-        extern "system" {
-            fn EnumWindows(f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
-            fn GetWindowThreadProcessId(h: isize, p: *mut u32) -> u32;
-        }
-        unsafe {
-            extern "system" fn ep(h: isize, _: isize) -> i32 {
-                let mut pid: u32 = 0;
-                unsafe { GetWindowThreadProcessId(h, &mut pid); }
-                if pid == std::process::id() {
-                    let _ = HWND.set(h);
-                    return 0;
-                }
-                1
-            }
-            EnumWindows(ep, 0);
-        }
-    }
-    if let Some(&hwnd) = HWND.get() {
+    if let Some(hwnd) = get_window_hwnd() {
         #[link(name = "user32")]
         extern "system" {
             fn GetSystemMetrics(nIndex: i32) -> i32;
@@ -185,7 +186,7 @@ fn center_window(w: i32, h: i32) {
             let cx = GetSystemMetrics(SM_CXSCREEN);
             let cy = GetSystemMetrics(SM_CYSCREEN);
             let x = (cx - w) / 2;
-            let y = (cy - h) / 3;
+            let y = cy.saturating_sub(h) / 3;
             SetWindowPos(hwnd, 0, x, y, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
         }
     }
@@ -196,6 +197,11 @@ fn center_window(_w: i32, _h: i32) {}
 
 fn rgba_to_image(data: &[u8], width: u32, height: u32) -> Option<Image> {
     if data.len() < (width * height * 4) as usize {
+        return None;
+    }
+    // skip if all-white icon (failed extraction)
+    let count = data.chunks_exact(4).filter(|p| p[0] == 255 && p[1] == 255 && p[2] == 255 && p[3] == 255).count();
+    if count as u32 == width * height {
         return None;
     }
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
@@ -209,33 +215,11 @@ fn rgba_to_image(data: &[u8], width: u32, height: u32) -> Option<Image> {
 
 #[cfg(target_os = "windows")]
 fn apply_dwm_blur() {
-    use std::sync::OnceLock;
-    static HWND: OnceLock<isize> = OnceLock::new();
-    if HWND.get().is_some() {
-        return;
-    }
-    #[link(name = "user32")]
-    extern "system" {
-        fn EnumWindows(f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
-        fn GetWindowThreadProcessId(h: isize, p: *mut u32) -> u32;
-    }
-    #[link(name = "dwmapi")]
-    extern "system" {
-        fn DwmSetWindowAttribute(h: isize, a: u32, v: *const std::ffi::c_void, s: u32) -> i32;
-    }
-    unsafe {
-        extern "system" fn ep(h: isize, _: isize) -> i32 {
-            let mut pid: u32 = 0;
-            unsafe { GetWindowThreadProcessId(h, &mut pid); }
-            if pid == std::process::id() {
-                let _ = HWND.set(h);
-                return 0;
-            }
-            1
+    if let Some(hwnd) = get_window_hwnd() {
+        #[link(name = "dwmapi")]
+        extern "system" {
+            fn DwmSetWindowAttribute(h: isize, a: u32, v: *const std::ffi::c_void, s: u32) -> i32;
         }
-        EnumWindows(ep, 0);
-    }
-    if let Some(&hwnd) = HWND.get() {
         unsafe {
             let backdrop: u32 = 2;
             DwmSetWindowAttribute(hwnd, 38, &backdrop as *const _ as *const std::ffi::c_void, 4);
@@ -259,8 +243,6 @@ fn install_hotkey(hotkey_str: &str) {
             "ctrl" | "control" => mv.push(0x11),
             "shift" => mv.push(0x10),
             "space" => kv = 0x20,
-            "up" => kv = 0x26,
-            "down" => kv = 0x28,
             _ => {}
         }
     }
@@ -278,15 +260,15 @@ fn install_hotkey(hotkey_str: &str) {
     unsafe extern "system" fn proc(c: i32, w: usize, l: isize) -> isize {
         if c >= 0 && (w as u32 == 0x100 || w as u32 == 0x104) {
             let vk = *(l as *const u32);
-            let visible = WINDOW_VISIBLE.load(Ordering::Relaxed);
-            if vk == 0x1B && visible {
-                ESCAPE_TRIGGERED.store(true, Ordering::Relaxed);
+            let vis = WINDOW_VISIBLE.load(Ordering::SeqCst);
+            if vis && vk == 0x1B {
+                ESCAPE_TRIGGERED.store(true, Ordering::SeqCst);
                 return 1;
             }
-            if visible {
+            if vis {
                 match vk {
-                    0x26 => { NAV_UP.store(true, Ordering::Relaxed); return 1; }
-                    0x28 => { NAV_DOWN.store(true, Ordering::Relaxed); return 1; }
+                    0x26 => { NAV_UP.store(true, Ordering::SeqCst); return 1; }
+                    0x28 => { NAV_DOWN.store(true, Ordering::SeqCst); return 1; }
                     _ => {}
                 }
             }
