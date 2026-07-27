@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $dir = "element-$version-win64"
+          New-Item -ItemType Directory -Path $dir -Force
+          Copy-Item target/release/element.exe $dir/
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Element ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          files: element-*.zip
+          draft: false
+          prerelease: false

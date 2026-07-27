@@ -8,6 +8,7 @@ use iced::keyboard::{key, Key, Modifiers};
 use iced::time::Duration;
 
 use crate::app::SearchResult;
+use crate::theme;
 use crate::{HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED};
 
 #[derive(Debug, Clone)]
@@ -62,8 +63,8 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 if app.selected_index >= 0 {
                     let idx = app.selected_index as usize;
                     if idx < app.results.len() {
-                        let item = &app.results[idx];
-                        app.engine.activate(&item.kind, &item.title, &app.input);
+                        let item = app.results[idx].clone();
+                        let _ = app.engine.activate(&item);
                     }
                 }
                 HIDE_REQUESTED.store(true, Ordering::SeqCst);
@@ -72,7 +73,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
         },
         Message::Tick => {
             if HOTKEY_TRIGGERED.swap(false, Ordering::SeqCst) {
-                app.engine.refresh_apps();
+                app.engine.refresh_all();
                 app.input.clear();
                 app.results.clear();
                 app.selected_index = -1;
@@ -90,7 +91,7 @@ pub fn view(app: &ElementApp) -> Element<'_, Message> {
     let search = TextInput::new("Search apps, files, or type anything...", &app.input)
         .id("search")
         .on_input(Message::InputChanged)
-        .padding([14, 16])
+        .padding([theme::INPUT_PADDING_TOP, theme::INPUT_PADDING_SIDES])
         .style(element_input_style);
 
     let mut list = Column::new().spacing(0);
@@ -128,50 +129,49 @@ fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, M
         let handle = iced::widget::image::Handle::from_rgba(w, h, pixels.clone());
         iced::widget::image(handle)
             .width(Length::Shrink)
-            .height(16.0)
+            .height(theme::ICON_SIZE)
             .into()
     } else {
-        container(text("").width(16.0))
-            .width(16.0)
-            .height(16.0)
+        container(text("").width(theme::ICON_SIZE))
+            .width(theme::ICON_SIZE)
+            .height(theme::ICON_SIZE)
             .into()
     };
 
     let title = text(&result.title)
-        .color(Color::from_rgb(30.0 / 255.0, 30.0 / 255.0, 35.0 / 255.0))
-        .size(13);
+        .color(theme::TEXT_PRIMARY)
+        .size(theme::TITLE_SIZE);
 
     let subtitle = text(&result.subtitle)
-        .color(Color::from_rgb(100.0 / 255.0, 100.0 / 255.0, 110.0 / 255.0))
-        .size(11);
+        .color(theme::TEXT_MUTED)
+        .size(theme::SUBTITLE_SIZE);
 
     let indicator = if selected {
-        container(text("").width(3))
+        container(text("").width(theme::INDICATOR_WIDTH))
             .style(|_: &Theme| {
                 iced::widget::container::Style {
-                    background: Some(
-                        Color::from_rgb(150.0 / 255.0, 150.0 / 255.0, 255.0 / 255.0).into(),
-                    ),
+                    background: Some(theme::ACCENT.into()),
                     ..Default::default()
                 }
             })
-            .width(3)
+            .width(theme::INDICATOR_WIDTH)
     } else {
-        container(text("").width(3)).width(3)
+        container(text("").width(theme::INDICATOR_WIDTH))
+            .width(theme::INDICATOR_WIDTH)
     };
 
     let item = row![
         indicator,
         icon,
-        column![title, subtitle].spacing(1).width(Length::Fill),
+        column![title, subtitle].spacing(theme::SPACING_SM).width(Length::Fill),
     ]
-    .spacing(12)
-    .padding([0, 16])
-    .height(42)
+    .spacing(theme::SPACING_MD)
+    .padding([0.0, theme::CONTENT_PADDING_SIDES])
+    .height(theme::RESULT_HEIGHT)
     .align_y(iced::Alignment::Center);
 
     let bg = if selected {
-        Color::from_rgb(235.0 / 255.0, 235.0 / 255.0, 245.0 / 255.0)
+        theme::BG_SELECTED
     } else {
         Color::TRANSPARENT
     };
@@ -186,32 +186,32 @@ fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, M
 }
 
 fn adaptive_height(results: &[SearchResult]) -> f32 {
-    let count = results.len().min(10) as f32;
-    let h = 52.0 + count * 42.0 + 8.0;
-    h.min(500.0).max(56.0)
+    let count = (results.len().min(theme::MAX_VISIBLE_RESULTS)) as f32;
+    let h = theme::SEARCH_BAR_HEIGHT + count * theme::RESULT_HEIGHT + theme::BOTTOM_PADDING;
+    h.min(theme::MAX_WINDOW_HEIGHT).max(theme::MIN_WINDOW_HEIGHT)
 }
 
 fn element_input_style(
-    theme: &Theme,
+    _theme: &Theme,
     _status: text_input::Status,
 ) -> text_input::Style {
     text_input::Style {
-        background: Color::from_rgb(245.0 / 255.0, 245.0 / 255.0, 245.0 / 255.0).into(),
+        background: theme::BG_INPUT.into(),
         border: iced::Border {
-            radius: 0.0.into(),
-            width: 0.0,
+            radius: theme::BORDER_RADIUS.into(),
+            width: theme::BORDER_WIDTH,
             color: Color::TRANSPARENT,
         },
-        icon: Color::from_rgb(120.0 / 255.0, 120.0 / 255.0, 128.0 / 255.0),
-        placeholder: Color::from_rgb(160.0 / 255.0, 160.0 / 255.0, 168.0 / 255.0),
-        value: Color::from_rgb(30.0 / 255.0, 30.0 / 255.0, 35.0 / 255.0),
-        selection: theme.extended_palette().primary.strong.color,
+        icon: theme::TEXT_ICON,
+        placeholder: theme::TEXT_PLACEHOLDER,
+        value: theme::TEXT_PRIMARY,
+        selection: theme::ACCENT,
     }
 }
 
 fn element_container_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Color::from_rgb(255.0, 255.0, 255.0).into()),
+        background: Some(theme::BG_PRIMARY.into()),
         ..Default::default()
     }
 }

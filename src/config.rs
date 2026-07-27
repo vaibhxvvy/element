@@ -76,7 +76,7 @@ impl Config {
     }
 }
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
         p.push(".element");
@@ -87,5 +87,58 @@ fn data_dir() -> PathBuf {
         p
     } else {
         PathBuf::from(".element")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults_are_valid() {
+        let cfg = Config::default();
+        assert_eq!(cfg.hotkey, "Alt+Space");
+        assert!(cfg.window_width > 0.0);
+        assert!(cfg.debounce_delay_ms > 0);
+        assert!(cfg.search_url.contains("%s"));
+    }
+
+    #[test]
+    fn config_toml_round_trip() {
+        let cfg = Config::default();
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.hotkey, cfg.hotkey);
+        assert!((parsed.window_width - cfg.window_width).abs() < f32::EPSILON);
+        assert_eq!(parsed.search_url, cfg.search_url);
+    }
+
+    #[test]
+    fn config_override_fields() {
+        let cfg = Config {
+            hotkey: "Ctrl+Shift+F".into(),
+            window_width: 800.0,
+            search_url: "https://google.com/search?q=%s".into(),
+            ..Default::default()
+        };
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.hotkey, "Ctrl+Shift+F");
+        assert!((parsed.window_width - 800.0).abs() < f32::EPSILON);
+        assert_eq!(parsed.search_url, "https://google.com/search?q=%s");
+    }
+
+    #[test]
+    fn config_json_migration_format() {
+        let cfg = Config::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.hotkey, cfg.hotkey);
+    }
+
+    #[test]
+    fn config_data_dir_exists() {
+        let dir = data_dir();
+        assert!(dir.to_string_lossy().contains(".element"));
     }
 }

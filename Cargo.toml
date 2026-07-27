@@ -15,4 +15,5 @@ webbrowser = "1.0"
 arboard = "3.3"
 walkdir = "2"
 image = "0.25"
+thiserror = "1"
 iced = { version = "0.13", default-features = false, features = ["wgpu", "system", "image", "tokio"] }
