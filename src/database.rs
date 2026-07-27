@@ -12,7 +12,10 @@ impl Database {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let conn = Connection::open(&path).expect("Failed to open database");
+        let conn = Connection::open(&path).unwrap_or_else(|e| {
+            eprintln!("Failed to open database: {:?}", e);
+            std::process::exit(1);
+        });
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS clipboard_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,7 +23,7 @@ impl Database {
                 text_content TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );"
-        ).expect("Failed to create tables");
+        ).ok();
         Self { conn: Mutex::new(conn) }
     }
 
@@ -31,16 +34,22 @@ impl Database {
     }
 
     pub fn load_clipboard(&self, limit: usize) -> Vec<(String, String)> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare(
             "SELECT text_content, created_at FROM clipboard_entries WHERE text_content IS NOT NULL ORDER BY id DESC LIMIT ?1"
-        ).unwrap();
+        ) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
         stmt.query_map(params![limit as i64], |row| {
             Ok((
                 row.get::<_, String>(0).unwrap_or_default(),
                 row.get::<_, String>(1).unwrap_or_default(),
             ))
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        }).ok().map(|m| m.filter_map(|r| r.ok()).collect()).unwrap_or_default()
     }
 }
 

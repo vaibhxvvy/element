@@ -10,6 +10,7 @@ pub struct SearchResult {
     pub title: String,
     pub subtitle: String,
     pub kind: String,
+    #[allow(dead_code)]
     pub icon_rgba: Option<(Vec<u8>, u32, u32)>,
 }
 
@@ -50,29 +51,29 @@ impl SearchEngine {
             ];
             let cache_dir = icon_cache_dir();
             for dir in start_menu_dirs.into_iter().filter_map(|d| d.ok()) {
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().map(|e| e == "lnk").unwrap_or(false) {
-                            let name = path.file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if !name.is_empty() && !name.starts_with('.') {
-                                let icon_rgba = extract_icon_from_lnk(&path, &cache_dir);
-                                apps.push(InstalledApp {
-                                    name,
-                                    path: path.to_string_lossy().to_string(),
-                                    icon_rgba,
-                                });
-                            }
+                for entry in walkdir::WalkDir::new(&dir).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if path.extension().map(|e| e == "lnk").unwrap_or(false) {
+                        let name = path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !name.is_empty() && !name.starts_with('.') {
+                            let icon_rgba = extract_icon_from_lnk(path, &cache_dir);
+                            apps.push(InstalledApp {
+                                name,
+                                path: path.to_string_lossy().to_string(),
+                                icon_rgba,
+                            });
                         }
                     }
                 }
             }
             apps.sort_by(|a, b| a.name.cmp(&b.name));
         }
-        *self.apps.lock().unwrap() = apps;
+        if let Ok(mut guard) = self.apps.lock() {
+            *guard = apps;
+        }
     }
 
     pub fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -128,7 +129,10 @@ impl SearchEngine {
             }
         }
 
-        let apps = self.apps.lock().unwrap();
+        let apps = match self.apps.lock() {
+            Ok(a) => a,
+            Err(_) => return results,
+        };
         for app in apps.iter() {
             if fuzzy_match(&app.name, &q) {
                 results.push(SearchResult {
@@ -155,7 +159,10 @@ impl SearchEngine {
     pub fn activate(&self, kind: &str, title: &str, input: &str) {
         match kind {
             "app" => {
-                let apps = self.apps.lock().unwrap();
+                let apps = match self.apps.lock() {
+                    Ok(a) => a,
+                    Err(_) => return,
+                };
                 if let Some(app) = apps.iter().find(|a| a.name == title) {
                     let _ = std::process::Command::new("cmd")
                         .args(["/c", "start", "", &app.path])
@@ -192,12 +199,16 @@ fn fuzzy_match(name: &str, query: &str) -> bool {
     if query.is_empty() {
         return false;
     }
-    if name.to_lowercase().contains(query) {
+    let lower = name.to_lowercase();
+    if lower.contains(query) {
+        return true;
+    }
+    let stem: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+    if stem.contains(query) {
         return true;
     }
     let qb = query.as_bytes();
-    let nb = name.to_lowercase();
-    let nb = nb.as_bytes();
+    let nb = lower.as_bytes();
     let mut qi = 0;
     for &b in nb {
         if qi < qb.len() && b == qb[qi] {
