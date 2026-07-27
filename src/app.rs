@@ -10,8 +10,8 @@ pub struct SearchResult {
     pub title: String,
     pub subtitle: String,
     pub kind: String,
-    #[allow(dead_code)]
     pub icon_rgba: Option<(Vec<u8>, u32, u32)>,
+    pub score: f64,
 }
 
 #[derive(Clone)]
@@ -77,13 +77,15 @@ impl SearchEngine {
     }
 
     pub fn search(&self, query: &str) -> Vec<SearchResult> {
-        if query.is_empty() {
-            return vec![];
+        let q = query.trim().to_lowercase();
+
+        if q.is_empty() {
+            return self.recommendations(12);
         }
 
-        let q = query.trim().to_lowercase();
-        let mut results = Vec::new();
+        let mut results: Vec<SearchResult> = Vec::new();
 
+        // Calculator
         if q.chars().any(|c| c.is_ascii_digit()
             || matches!(c, '+' | '-' | '*' | '/' | 'x' | '÷' | '(' | ')'))
         {
@@ -94,10 +96,12 @@ impl SearchEngine {
                     subtitle: format!("Calc: {}", query),
                     kind: "calc".into(),
                     icon_rgba: None,
+                    score: 1000.0,
                 });
             }
         }
 
+        // Emoji search
         if q.starts_with("emoji") || q.starts_with(":") {
             let term = q.trim_start_matches("emoji").trim().trim_start_matches(':').trim();
             for emoji in emojis::iter() {
@@ -110,12 +114,14 @@ impl SearchEngine {
                         subtitle: emoji.name().into(),
                         kind: "emoji".into(),
                         icon_rgba: None,
+                        score: 500.0 - (results.len() as f64),
                     });
                     if results.len() > 20 { break; }
                 }
             }
         }
 
+        // Clipboard history
         if q == "cbhist" || q.starts_with("clip") {
             let entries = self.db.load_clipboard(20);
             for (text, ts) in &entries {
@@ -125,33 +131,83 @@ impl SearchEngine {
                     subtitle: format!("Clipboard · {}", ts),
                     kind: "clipboard".into(),
                     icon_rgba: None,
+                    score: 200.0,
                 });
             }
         }
 
-        let apps = match self.apps.lock() {
-            Ok(a) => a,
-            Err(_) => return results,
-        };
-        for app in apps.iter() {
-            if fuzzy_match(&app.name, &q) {
-                results.push(SearchResult {
-                    title: app.name.clone(),
-                    subtitle: "App".into(),
-                    kind: "app".into(),
-                    icon_rgba: app.icon_rgba.clone(),
-                });
+        // App search with scored fuzzy matching
+        {
+            let apps = match self.apps.lock() {
+                Ok(a) => a,
+                Err(_) => return results,
+            };
+            for app in apps.iter() {
+                if let Some(score) = fuzzy_score(&q, &app.name) {
+                    let frecency = self.db.frecency_score(&app.name);
+                    let boost = 1.0 + (frecency * 5.0).min(2.0);
+                    results.push(SearchResult {
+                        title: app.name.clone(),
+                        subtitle: "App".into(),
+                        kind: "app".into(),
+                        icon_rgba: app.icon_rgba.clone(),
+                        score: score * boost,
+                    });
+                }
             }
         }
-        drop(apps);
 
+        // Sort by score descending, then alphabetically
+        results.sort_by(|a, b| {
+            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.title.cmp(&b.title))
+        });
+
+        // Web search suggestion at the bottom
         results.push(SearchResult {
             title: format!("Search web for \"{}\"", query),
             subtitle: config_or_default(&self.config.search_url,
                 "https://duckduckgo.com/search?q=%s").replace("%s", query),
             kind: "websearch".into(),
             icon_rgba: None,
+            score: -1.0,
         });
+
+        results
+    }
+
+    fn recommendations(&self, limit: usize) -> Vec<SearchResult> {
+        let mut results: Vec<SearchResult> = Vec::new();
+        let frecency = self.db.top_frecency(limit);
+        let apps = match self.apps.lock() {
+            Ok(a) => a,
+            Err(_) => return results,
+        };
+
+        for (name, _count, _last) in &frecency {
+            if let Some(app) = apps.iter().find(|a| a.name == *name) {
+                results.push(SearchResult {
+                    title: app.name.clone(),
+                    subtitle: "App".into(),
+                    kind: "app".into(),
+                    icon_rgba: app.icon_rgba.clone(),
+                    score: 200.0,
+                });
+            }
+        }
+
+        for app in apps.iter() {
+            if results.len() >= limit { break; }
+            if !results.iter().any(|r| r.title == app.name) {
+                results.push(SearchResult {
+                    title: app.name.clone(),
+                    subtitle: "App".into(),
+                    kind: "app".into(),
+                    icon_rgba: app.icon_rgba.clone(),
+                    score: 100.0,
+                });
+            }
+        }
 
         results
     }
@@ -159,6 +215,7 @@ impl SearchEngine {
     pub fn activate(&self, kind: &str, title: &str, input: &str) {
         match kind {
             "app" => {
+                self.db.record_launch(title);
                 let apps = match self.apps.lock() {
                     Ok(a) => a,
                     Err(_) => return,
@@ -195,27 +252,87 @@ fn config_or_default(config: &str, default: &str) -> String {
     if config.is_empty() { default.into() } else { config.into() }
 }
 
-fn fuzzy_match(name: &str, query: &str) -> bool {
+/// Scored fuzzy match — RustCast/Sublime-like character-level matching.
+/// Returns `Some(score)` if all query chars appear in order in name, `None` otherwise.
+fn fuzzy_score(query: &str, name: &str) -> Option<f64> {
     if query.is_empty() {
-        return false;
+        return None;
     }
-    let lower = name.to_lowercase();
-    if lower.contains(query) {
-        return true;
+
+    let q = query.as_bytes();
+    let t = name.as_bytes();
+    let tl = name.to_lowercase();
+    let t_lower = tl.as_bytes();
+
+    if q.len() > t.len() {
+        return None;
     }
-    let stem: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-    if stem.contains(query) {
-        return true;
-    }
-    let qb = query.as_bytes();
-    let nb = lower.as_bytes();
+
+    let mut score = 0.0;
     let mut qi = 0;
-    for &b in nb {
-        if qi < qb.len() && b == qb[qi] {
+    let mut prev_matched = false;
+    let mut first_match_pos: Option<usize> = None;
+
+    for (ti, &ch) in t_lower.iter().enumerate() {
+        if qi < q.len() && ch == q[qi] {
             qi += 1;
+
+            // Base score for each matched character
+            score += 10.0;
+
+            // Bonus for consecutive matches
+            if prev_matched {
+                score += 15.0;
+            }
+
+            // Bonus for matching at word boundary (space, -, _, /, \)
+            if ti == 0 || matches!(t[ti - 1], b' ' | b'-' | b'_' | b'/' | b'\\') {
+                score += 30.0;
+            }
+
+            // Bonus for camelCase boundary
+            if ti > 0
+                && t[ti].is_ascii_uppercase()
+                && t[ti - 1].is_ascii_lowercase()
+            {
+                score += 20.0;
+            }
+
+            // Bonus for matching after a separator
+            if ti > 0 && !t[ti - 1].is_ascii_alphanumeric() {
+                score += 15.0;
+            }
+
+            if first_match_pos.is_none() {
+                first_match_pos = Some(ti);
+            }
+
+            prev_matched = true;
+        } else {
+            prev_matched = false;
         }
     }
-    qi == qb.len()
+
+    if qi != q.len() {
+        return None;
+    }
+
+    // Bonus for early match (matches closer to start are better)
+    if let Some(pos) = first_match_pos {
+        if pos == 0 {
+            score += 50.0;
+        } else {
+            score += (1.0 - pos as f64 / t.len() as f64) * 30.0;
+        }
+    }
+
+    // Penalize for unmatched characters in target
+    let matched = qi;
+    let unmatched = t.len() - matched;
+    score -= unmatched as f64 * 2.0;
+
+    // Normalize: higher score per query char is better
+    Some(score / q.len() as f64)
 }
 
 fn icon_cache_dir() -> std::path::PathBuf {
@@ -234,63 +351,7 @@ fn icon_cache_dir() -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-fn extract_icon_from_lnk(
-    lnk_path: &std::path::Path,
-    _cache_dir: &std::path::Path,
-) -> Option<(Vec<u8>, u32, u32)> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    const SHGFI_ICON: u32 = 0x00000100;
-    const SHGFI_SMALLICON: u32 = 0x00000001;
-
-    #[repr(C)]
-    struct SHFILEINFOW {
-        hIcon: isize,
-        iIcon: i32,
-        dwAttributes: u32,
-        szDisplayName: [u16; 260],
-        szTypeName: [u16; 80],
-    }
-
-    #[link(name = "shell32")]
-    extern "system" {
-        fn SHGetFileInfoW(
-            pszPath: *const u16,
-            dwFileAttributes: u32,
-            psfi: *mut SHFILEINFOW,
-            cbFileInfo: u32,
-            uFlags: u32,
-        ) -> usize;
-    }
-
-    let wide: Vec<u16> = OsStr::new(lnk_path.as_os_str())
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let mut shfi: SHFILEINFOW = unsafe { std::mem::zeroed() };
-    let ret = unsafe {
-        SHGetFileInfoW(
-            wide.as_ptr(),
-            0,
-            &mut shfi,
-            std::mem::size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON | SHGFI_SMALLICON,
-        )
-    };
-    if ret == 0 || shfi.hIcon == 0 {
-        return None;
-    }
-
-    let icon = shfi.hIcon;
-    let rgba = hicon_to_rgba(icon, 16);
-    unsafe { destroy_icon(icon); }
-    rgba.map(|(data, w, h)| (data, w as u32, h as u32))
-}
-
-#[cfg(target_os = "windows")]
-fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, i32, i32)> {
+fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, u32, u32)> {
     use std::ptr;
     #[repr(C)]
     struct BITMAPINFOHEADER {
@@ -388,8 +449,64 @@ fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, i32, i32)> {
             return None;
         }
 
-        Some((rgba, size, size))
+        Some((rgba, size as u32, size as u32))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn extract_icon_from_lnk(
+    lnk_path: &std::path::Path,
+    _cache_dir: &std::path::Path,
+) -> Option<(Vec<u8>, u32, u32)> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    const SHGFI_ICON: u32 = 0x00000100;
+    const SHGFI_SMALLICON: u32 = 0x00000001;
+
+    #[repr(C)]
+    struct SHFILEINFOW {
+        hIcon: isize,
+        iIcon: i32,
+        dwAttributes: u32,
+        szDisplayName: [u16; 260],
+        szTypeName: [u16; 80],
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHGetFileInfoW(
+            pszPath: *const u16,
+            dwFileAttributes: u32,
+            psfi: *mut SHFILEINFOW,
+            cbFileInfo: u32,
+            uFlags: u32,
+        ) -> usize;
+    }
+
+    let wide: Vec<u16> = OsStr::new(lnk_path.as_os_str())
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut shfi: SHFILEINFOW = unsafe { std::mem::zeroed() };
+    let ret = unsafe {
+        SHGetFileInfoW(
+            wide.as_ptr(),
+            0,
+            &mut shfi,
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_SMALLICON,
+        )
+    };
+    if ret == 0 || shfi.hIcon == 0 {
+        return None;
+    }
+
+    let icon = shfi.hIcon;
+    let rgba = hicon_to_rgba(icon, 16);
+    unsafe { destroy_icon(icon); }
+    rgba
 }
 
 #[cfg(not(target_os = "windows"))]

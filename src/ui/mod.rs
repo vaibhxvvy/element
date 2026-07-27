@@ -7,8 +7,8 @@ use iced::{
 use iced::keyboard::{key, Key, Modifiers};
 use iced::time::Duration;
 
-use crate::app::{SearchEngine, SearchResult};
-use crate::{HIDE_REQUESTED, HOTKEY_TRIGGERED};
+use crate::app::SearchResult;
+use crate::{HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -18,7 +18,7 @@ pub enum Message {
 }
 
 pub struct ElementApp {
-    pub engine: SearchEngine,
+    pub engine: crate::app::SearchEngine,
     pub input: String,
     pub results: Vec<SearchResult>,
     pub selected_index: i32,
@@ -30,6 +30,9 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
             app.input = text.clone();
             app.results = app.engine.search(&text);
             app.selected_index = if text.is_empty() { -1 } else { 0 };
+            let h = adaptive_height(&app.results);
+            RESIZE_HEIGHT.store(h as u32, Ordering::Relaxed);
+            RESIZE_REQUESTED.store(true, Ordering::SeqCst);
         }
         Message::KeyPressed(key, _mods) => match key {
             Key::Named(key::Named::Escape) => {
@@ -73,6 +76,10 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 app.input.clear();
                 app.results.clear();
                 app.selected_index = -1;
+                let h = adaptive_height(&[]);
+                RESIZE_HEIGHT.store(h as u32, Ordering::Relaxed);
+                RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+                return text_input::focus("search");
             }
         }
     }
@@ -81,6 +88,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
 
 pub fn view(app: &ElementApp) -> Element<'_, Message> {
     let search = TextInput::new("Search apps, files, or type anything...", &app.input)
+        .id("search")
         .on_input(Message::InputChanged)
         .padding([14, 16])
         .style(element_input_style);
@@ -116,6 +124,19 @@ pub fn subscription(_app: &ElementApp) -> Subscription<Message> {
 }
 
 fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, Message> {
+    let icon: Element<'_, Message> = if let Some((ref pixels, w, h)) = result.icon_rgba {
+        let handle = iced::widget::image::Handle::from_rgba(w, h, pixels.clone());
+        iced::widget::image(handle)
+            .width(Length::Shrink)
+            .height(16.0)
+            .into()
+    } else {
+        container(text("").width(16.0))
+            .width(16.0)
+            .height(16.0)
+            .into()
+    };
+
     let title = text(&result.title)
         .color(Color::from_rgb(30.0 / 255.0, 30.0 / 255.0, 35.0 / 255.0))
         .size(13);
@@ -141,6 +162,7 @@ fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, M
 
     let item = row![
         indicator,
+        icon,
         column![title, subtitle].spacing(1).width(Length::Fill),
     ]
     .spacing(12)
@@ -161,6 +183,12 @@ fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, M
         .width(Length::Fill);
 
     mouse_area(item).into()
+}
+
+fn adaptive_height(results: &[SearchResult]) -> f32 {
+    let count = results.len().min(10) as f32;
+    let h = 52.0 + count * 42.0 + 8.0;
+    h.min(500.0).max(56.0)
 }
 
 fn element_input_style(

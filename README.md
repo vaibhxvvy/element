@@ -8,7 +8,7 @@
 
 <p align="center">
   <strong>Floating search bar · Unified launcher · Global hotkey</strong><br>
-  <em>for Windows — built natively in Rust with Slint.</em>
+  <em>for Windows — built natively in Rust with Iced.</em>
 </p>
 
 <p align="center">
@@ -23,28 +23,33 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 
 ## Features
 
-- **Global hotkey** — Toggle the overlay with `Alt+Space` (configurable). Low-level keyboard hook (`WH_KEYBOARD_LL`) for reliable capture. **Escape** closes the window.
-- **App launcher** — Searches installed applications from the Start Menu with proper **app icons** extracted from `.lnk` shortcuts.
+- **Global hotkey** — Toggle the overlay with `Alt+Space` (configurable). Background thread polling (`GetAsyncKeyState`) for reliable capture. **Escape** closes the window.
+- **App launcher** — Searches installed applications from the Start Menu with proper **app icons** extracted from `.lnk` shortcuts and rendered natively.
+- **Scored fuzzy matching** — Word boundary, camelCase, consecutive, and early-match bonuses. Type `pwsh` → matches "PowerShell", `wn` → "Windows Notepad", `vsc` → "Visual Studio Code".
+- **Frecency ranking** — Frequently and recently launched apps rise to the top. Uses a SQLite frecency table (`count / days since last use`).
+- **App recommendations** — Show recently/frequently used apps when the search bar opens.
+- **Auto-focus** — Search bar is focused immediately on `Alt+Space`, ready to type.
+- **Adaptive window height** — Window resizes automatically to fit search results (up to 10 rows, capped at 500px).
 - **Web search** — Fallback that opens your browser with the configured search URL.
 - **Calculator** — Type `2+2`, `(3*4)/2`, press Enter to copy result to clipboard.
 - **Emoji search** — Type `emoji` or `:` followed by a search term.
 - **Clipboard history** — Type `cbhist` or `clip` to browse recent clipboard entries.
-- **Debounced search** — Results appear after you stop typing (configurable delay).
-- **Always-on-top overlay** — Acrylic-blur backdrop, centered, no decorations.
+- **Always-on-top overlay** — Borderless, centered, light theme.
 
 ## Architecture
 
 ```
 element/
 ├── src/
-│   ├── main.rs       # Slint entry, hotkey hook, timer polling, Escape handling
-│   ├── app.rs        # SearchEngine + Win32 icon extraction from .lnk files
-│   ├── config.rs     # TOML config (hotkey, search URL, window size, debounce)
-│   └── database.rs   # SQLite-backed clipboard history
-├── ui/
-│   └── main.slint    # Slint UI — search bar, results list with icons, Escape
-├── build.rs          # slint-build compilation
-└── Cargo.toml
+│   ├── main.rs        # Entry point: hotkey thread (GetAsyncKeyState), Iced bootstrap
+│   ├── app.rs         # SearchEngine: app scan, fuzzy scorer, frecency, icon extraction
+│   ├── config.rs      # TOML config with JSON migration
+│   ├── database.rs    # SQLite — clipboard_entries + frecency tables
+│   └── ui/
+│       └── mod.rs     # Iced views: search bar, result rows with icons, styles
+├── brandkit/          # Brand assets
+├── Cargo.toml
+└── README.md
 ```
 
 ### Search system
@@ -54,16 +59,35 @@ Every query runs through `SearchEngine::search()` which checks, in order:
 1. **Calculator** — math expression detection and evaluation
 2. **Emoji** — `emoji` or `:` prefix triggers emoji database search
 3. **Clipboard** — `cbhist` or `clip` prefix loads recent clipboard entries
-4. **Apps** — fuzzy-match installed app names with extracted icons
+4. **Apps** — scored fuzzy-match installed app names with frecency boost and extracted icons
 5. **Web search** — always present as a fallback
+
+### Fuzzy match scoring
+
+```
+fuzzy_score(query, app_name) → Option<f64>
+```
+
+Each character of the query must appear in order in the app name. The score rewards:
+- **Consecutive matches** — adjacent chars get +15 bonus
+- **Word boundaries** — match after space, `-`, `_`, `/`, `\` gets +30
+- **CamelCase boundaries** — match at uppercase after lowercase gets +20
+- **Early matches** — match near the start gets up to +50
+- **Gap penalty** — unmatched characters in the name reduce score by -2 each
+
+Final score is multiplied by a frecency boost: `1.0 + (frecency_score × 5.0)` capped at 3×.
 
 ### Hotkey system
 
-Uses `SetWindowsHookExW` with `WH_KEYBOARD_LL`. The hook proc checks for the configured hotkey combo and for Escape (when window is visible). Flags are polled by a Slint `Timer` every 200ms.
+Background thread polls `GetAsyncKeyState` for the configured hotkey every 20ms. When detected, it directly calls `ShowWindow` / `SetWindowPos` on the Iced window via `FindWindowW`. Atomic flags communicate between the thread and Iced's `update` function.
 
-### Debounce
+### Auto-focus
 
-A Slint `Timer` in `SingleShot` mode is restarted on every keystroke. When the timer fires (after `debounce_delay_ms`), the search is performed. This avoids re-rendering on every keystroke.
+When the window appears, `text_input::focus("search")` is returned from the update function, immediately focusing the search bar so the user can start typing.
+
+### Adaptive height
+
+The window starts at 580×56px. On each keystroke, `adaptive_height()` calculates the needed height (`52 + min(results, 10) × 42 + 8`), stores it in an atomic, and signals the hotkey thread to call `SetWindowPos`.
 
 ## Installation
 
@@ -108,6 +132,7 @@ clipboard_max_entries = 100
 |--------|-------|
 | Toggle overlay | `Alt+Space` (or configured hotkey) |
 | Select result | Click or Enter |
+| Navigate results | Arrow Up / Arrow Down |
 | Close overlay | `Escape` |
 
 ## Build from source

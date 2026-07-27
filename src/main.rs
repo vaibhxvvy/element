@@ -5,7 +5,7 @@ mod config;
 mod database;
 mod ui;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use iced::{window, Theme};
@@ -16,6 +16,8 @@ pub(crate) static HOTKEY_TRIGGERED: AtomicBool = AtomicBool::new(false);
 pub(crate) static HOTKEY_ARMED: AtomicBool = AtomicBool::new(true);
 pub(crate) static HIDE_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub(crate) static VISIBLE: AtomicBool = AtomicBool::new(false);
+pub(crate) static RESIZE_HEIGHT: AtomicU32 = AtomicU32::new(56);
+pub(crate) static RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn main() -> iced::Result {
     #[cfg(target_os = "windows")]
@@ -67,6 +69,15 @@ pub fn main() -> iced::Result {
                 }
             }
 
+            if RESIZE_REQUESTED.swap(false, Ordering::SeqCst) {
+                let wide: Vec<u16> = "Element\0".encode_utf16().collect();
+                let hwnd = unsafe { FindWindowW(std::ptr::null(), wide.as_ptr()) };
+                if hwnd != 0 {
+                    let h = RESIZE_HEIGHT.load(Ordering::Relaxed) as i32;
+                    unsafe { SetWindowPos(hwnd, 0, 0, 0, 580, h, 0x0004 | 0x0002) };
+                }
+            }
+
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     });
@@ -76,7 +87,7 @@ pub fn main() -> iced::Result {
         .window(window::Settings {
             decorations: false,
             level: window::Level::AlwaysOnTop,
-            size: iced::Size::new(580.0, 60.0),
+            size: iced::Size::new(580.0, 56.0),
             visible: false,
             ..Default::default()
         })
