@@ -1,0 +1,82 @@
+import { VerticalBox, ListView } from "std-widgets.slint";
+
+export struct ResultItem {
+    title: string,
+    subtitle: string,
+    kind: string,
+}
+
+export component SearchWindow inherits Window {
+    in-out property <string> input-text;
+    in-out property <[ResultItem]> results;
+    in-out property <int> selected-index: -1;
+
+    callback input-changed(string);
+    callback item-selected(int);
+    callback request-hide();
+
+    background: #151518;
+    no-frame: true;
+    always-on-top: true;
+    width: 580px;
+    min-height: 60px;
+
+    VerticalBox {
+        padding: 0;
+        spacing: 0;
+
+        Rectangle {
+            min-height: 44px;
+            background: #1A1A1E;
+
+            Text {
+                x: 14px;
+                y: (parent.height - self.height) / 2;
+                visible: input-text == "";
+                color: #666677;
+                font-size: 14px;
+                text: "Search apps, files, or type anything...";
+            }
+
+            TextInput {
+                x: 14px;
+                width: parent.width - 28px;
+                height: parent.height;
+                color: #F5F3FA;
+                font-size: 14px;
+                text <=> input-text;
+                edited => { input-changed(self.text); }
+                accepted => { if (selected-index >= 0) { item-selected(selected-index); } }
+            }
+        }
+
+        ListView {
+            visible: results.length > 0;
+            for item[idx] in results: Rectangle {
+                height: 38px;
+                background: idx == selected-index ? #2A2A32 : transparent;
+
+                TouchArea {
+                    clicked => { item-selected(idx); }
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
+
+                        Text {
+                            text: item.title;
+                            color: #F5F3FA;
+                            font-size: 13px;
+                        }
+                        Text {
+                            text: item.subtitle;
+                            color: #9999A5;
+                            font-size: 12px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

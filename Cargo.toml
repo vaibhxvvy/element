@@ -1,20 +1,19 @@
 [package]
 name = "element"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
-description = "A fast local launcher, notes, and search tool for Windows and Linux — starting life as a Rust native text editor."
+description = "A fast local launcher and search tool for Windows — built with Slint."
 
 [dependencies]
-gpui = { package = "gpui-unofficial", version = "1.11.3" }
-gpui-platform = { package = "gpui-platform-gpui-unofficial", version = "1.11.3" }
-global-hotkey = { version = "0.5", features = ["serde"] }
+slint = "1.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-image = "0.25"
-tinyfiledialogs = "3.9"
 rusqlite = { version = "0.31", features = ["bundled"] }
-arboard = "3.3"
-evalexpr = "11"
 emojis = "0.6"
-crossbeam-channel = "0.5"
+evalexpr = "11"
+webbrowser = "1.0"
+arboard = "3.3"
+walkdir = "2"
 
+[build-dependencies]
+slint-build = "1.9"

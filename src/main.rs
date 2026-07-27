@@ -1,124 +1,158 @@
-#![allow(dead_code)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
-mod clipboard;
 mod config;
 mod database;
-mod editor;
-mod module;
-mod overlay;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
-use global_hotkey::hotkey::{HotKey, Modifiers, Code};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use gpui::{App, Bounds, Focusable, WindowBounds, WindowOptions, px, size};
-use gpui::prelude::*;
-use gpui_platform::application;
+slint::include_modules!();
+use slint::Model;
 
-use app::ElementApp;
-use config::ElementConfig;
-use database::Database;
-use editor::buffer::TextBuffer;
-use editor::EditorView;
-use module::ModuleRegistry;
-use overlay::OverlayView;
+use crate::app::SearchEngine;
+
+static HOTKEY_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 fn main() {
-    application().run(|cx: &mut App| {
-        let config = ElementConfig::load();
-        let hotkey = config.hotkey.clone();
-        let db = Arc::new(Database::init());
+    let config = config::Config::load();
+    let db = Arc::new(database::Database::new());
 
-        let icon = std::fs::read("brandkit/app-icons/icon-256.png")
-            .ok()
-            .and_then(|data| image::load_from_memory(&data).ok())
-            .map(|img| Arc::new(img.to_rgba8()));
+    install_hotkey(&config.hotkey);
 
-        let bounds = Bounds::centered(
-            None,
-            size(px(config.window_width), px(config.window_height)),
-            cx,
-        );
-        let _window_handle = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                icon,
-                focus: true,
-                show: true,
-                ..Default::default()
-            },
-            |window, cx| {
-                let module_registry = Arc::new(ModuleRegistry::new());
-                let editor = cx.new(|cx| EditorView::new(TextBuffer::new(), cx));
-                let overlay = cx.new(|cx| OverlayView::new(module_registry.clone(), cx));
+    let ui = SearchWindow::new().unwrap();
 
-                module::register_builtin_modules(
-                    &module_registry,
-                    editor.clone(),
-                    overlay.clone(),
-                    db.clone(),
-                );
+    let engine = SearchEngine::new(&config, db.clone());
+    let _ = ui.window().hide();
 
-                overlay.update(cx, |o, _cx| {
-                    o.set_handles(editor.clone(), overlay.clone());
-                });
+    #[cfg(target_os = "windows")]
+    apply_dwm_blur();
 
-                if config.clipboard.enabled {
-                    let (clip_tx, clip_rx) = std::sync::mpsc::channel();
-                    clipboard::start_clipboard_monitor(
-                        Database::init(),
-                        clip_tx,
-                    );
-                    let overlay_clip = overlay.clone();
-                    window.spawn(cx, async move |cx| {
-                        loop {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(100))
-                                .await;
-                            while let Ok(_text) = clip_rx.try_recv() {
-                                let _ = overlay_clip.update(cx, |_o, _cx| {});
-                            }
-                        }
-                    })
-                    .detach();
+    let engine_hot = engine.clone();
+    let ui_hot = ui.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(200), move || {
+        if HOTKEY_TRIGGERED.swap(false, Ordering::Relaxed) {
+            if let Some(ui) = ui_hot.upgrade() {
+                if ui.window().is_visible() {
+                    let _ = ui.window().hide();
+                } else {
+                    engine_hot.refresh_apps();
+                    let _ = ui.window().show();
+                    ui.set_input_text(String::new().into());
+                    ui.set_selected_index(-1);
+                    ui.set_results(Rc::new(slint::VecModel::from(vec![])).into());
                 }
-
-                let overlay_handle = overlay.clone();
-                window.spawn(cx, async move |cx| {
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(50))
-                            .await;
-                        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-                            if event.state() == HotKeyState::Pressed {
-                                let _ = overlay_handle.update(cx, |o, _cx| {
-                                    o.toggle();
-                                });
-                            }
-                        }
-                    }
-                })
-                .detach();
-
-                let focus_handle = editor.focus_handle(cx);
-                window.focus(&focus_handle, cx);
-
-                cx.new(|_| ElementApp::new(config, editor, overlay, module_registry))
-            },
-        )
-        .unwrap();
-
-        let _ = GlobalHotKeyManager::new().map(|manager| {
-            let hotkey_str = hotkey;
-            if let Ok(hotkey) = hotkey_str.parse::<HotKey>() {
-                let _ = manager.register(hotkey);
-            } else {
-                let fallback = HotKey::new(Some(Modifiers::ALT), Code::Space);
-                let _ = manager.register(fallback);
             }
-        });
-
-        cx.activate(true);
+        }
     });
+
+    let engine_s = engine.clone();
+    let ui_s = ui.as_weak();
+    ui.on_input_changed(move |text| {
+        if let Some(ui) = ui_s.upgrade() {
+            let results = engine_s.search(&text);
+            let model = Rc::new(slint::VecModel::from(
+                results.into_iter().map(|r| ResultItem {
+                    title: r.title.into(),
+                    subtitle: r.subtitle.into(),
+                    kind: r.kind.into(),
+                }).collect::<Vec<_>>()
+            ));
+            ui.set_results(model.into());
+            ui.set_selected_index(if text.is_empty() { -1 } else { 0 });
+        }
+    });
+
+    let engine_a = engine.clone();
+    let ui_a = ui.as_weak();
+    ui.on_item_selected(move |index| {
+        if let Some(ui) = ui_a.upgrade() {
+            let items = ui.get_results();
+            if index >= 0 && (index as usize) < items.row_count() {
+                let item = items.row_data(index as usize).unwrap();
+                engine_a.activate(&item.kind, &item.title, &ui.get_input_text());
+            }
+            let _ = ui.window().hide();
+        }
+    });
+
+    let ui_h = ui.as_weak();
+    ui.on_request_hide(move || {
+        if let Some(ui) = ui_h.upgrade() {
+            let _ = ui.window().hide();
+        }
+    });
+
+    ui.run().unwrap();
 }
+
+#[cfg(target_os = "windows")]
+fn apply_dwm_blur() {
+    use std::sync::atomic::AtomicBool;
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::Relaxed) { return; }
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
+        fn GetWindowThreadProcessId(h: isize, p: *mut u32) -> u32;
+    }
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(h: isize, a: u32, v: *const std::ffi::c_void, s: u32) -> i32;
+    }
+    unsafe {
+        static mut HWND: isize = 0;
+        unsafe extern "system" fn ep(h: isize, _: isize) -> i32 {
+            let mut pid: u32 = 0; GetWindowThreadProcessId(h, &mut pid);
+            if pid == std::process::id() { HWND = h; return 0; } 1
+        }
+        EnumWindows(ep, 0);
+        if HWND == 0 { DONE.store(false, Ordering::Relaxed); return; }
+        let backdrop: u32 = 2;
+        DwmSetWindowAttribute(HWND, 38, &backdrop as *const _ as *const std::ffi::c_void, 4);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_hotkey(hotkey_str: &str) {
+    use std::sync::atomic::AtomicU16;
+    use std::sync::OnceLock;
+    static KEY_VK: AtomicU16 = AtomicU16::new(0x20);
+    static MOD_VKS: OnceLock<Vec<u16>> = OnceLock::new();
+
+    let parts: Vec<&str> = hotkey_str.split('+').map(|p| p.trim()).collect();
+    let mut mv = Vec::new();
+    let mut kv = 0x20u16;
+    for p in &parts {
+        match p.to_lowercase().as_str() { "alt" => mv.push(0x12), "ctrl" | "control" => mv.push(0x11), "shift" => mv.push(0x10), "space" => kv = 0x20, _ => {} }
+    }
+    KEY_VK.store(kv, Ordering::Relaxed); let _ = MOD_VKS.set(mv);
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowsHookExW(i: i32, f: unsafe extern "system" fn(i32, usize, isize) -> isize, m: isize, t: u32) -> isize;
+        fn CallNextHookEx(h: isize, c: i32, w: usize, l: isize) -> isize;
+        fn GetModuleHandleW(m: *const u16) -> isize;
+        fn GetAsyncKeyState(v: i32) -> i16;
+    }
+
+    unsafe extern "system" fn proc(c: i32, w: usize, l: isize) -> isize {
+        if c >= 0 && (w as u32 == 0x100 || w as u32 == 0x104) {
+            let vk = *(l as *const u32);
+            if vk == KEY_VK.load(Ordering::Relaxed) as u32 {
+                if let Some(mv) = MOD_VKS.get() {
+                    if mv.iter().all(|v| (GetAsyncKeyState(*v as i32) as i32 & 0x8000) != 0) {
+                        HOTKEY_TRIGGERED.store(true, Ordering::Relaxed); return 1;
+                    }
+                }
+            }
+        }
+        unsafe { CallNextHookEx(0, c, w, l) }
+    }
+    unsafe { SetWindowsHookExW(13, proc, GetModuleHandleW(std::ptr::null()), 0); }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn install_hotkey(_: &str) {}
