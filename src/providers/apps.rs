@@ -316,7 +316,7 @@ fn cached_icon(lnk_path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, u32, u32)>
         }
     }
 
-    if let Some(icon) = extract_icon_from_lnk(lnk_path) {
+    if let Some(icon) = shell_item_icon(lnk_path, 32) {
         save_icon_cache(cache_dir, lnk_path, &icon.0, icon.1, icon.2);
         Some(icon)
     } else {
@@ -476,8 +476,83 @@ fn load_icon_file(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 #[cfg(target_os = "windows")]
-fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, u32, u32)> {
+fn shell_item_icon(lnk_path: &Path, size: u32) -> Option<(Vec<u8>, u32, u32)> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
     use std::ptr;
+
+    #[repr(C)]
+    struct GUID {
+        data1: u32,
+        data2: u16,
+        data3: u16,
+        data4: [u8; 8],
+    }
+
+    #[allow(non_upper_case_globals)]
+    const CLSID_IShellItemImageFactory: GUID = GUID {
+        data1: 0xbcc18b79,
+        data2: 0xba16,
+        data3: 0x442f,
+        data4: [0x80, 0xc4, 0x8a, 0x59, 0xc3, 0x0c, 0x46, 0x3b],
+    };
+
+    const SIIGBF_RESIZETOFIT: u32 = 0x00;
+    const S_OK: i32 = 0;
+
+    #[repr(C)]
+    struct SIZE {
+        cx: i32,
+        cy: i32,
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHCreateItemFromParsingName(
+            pszPath: *const u16,
+            pbc: *const std::ffi::c_void,
+            riid: *const GUID,
+            ppv: *mut *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn GetObjectW(h: isize, c: i32, pv: *mut std::ffi::c_void) -> i32;
+        fn CreateCompatibleDC(hdc: isize) -> isize;
+        fn DeleteDC(hdc: isize) -> i32;
+        fn CreateDIBSection(
+            hdc: isize,
+            pbmi: *const BITMAPINFOHEADER,
+            usage: u32,
+            ppvBits: *mut *mut u8,
+            hSection: isize,
+            offset: u32,
+        ) -> isize;
+        fn SelectObject(hdc: isize, h: isize) -> isize;
+        fn DeleteObject(h: isize) -> i32;
+        fn GetDIBits(
+            hdc: isize,
+            hbmp: isize,
+            start: u32,
+            lines: u32,
+            lpvBits: *mut u8,
+            lpbmi: *mut BITMAPINFOHEADER,
+            usage: u32,
+        ) -> i32;
+    }
+
+    #[repr(C)]
+    struct BITMAP {
+        bmType: i32,
+        bmWidth: i32,
+        bmHeight: i32,
+        bmWidthBytes: i32,
+        bmPlanes: u16,
+        bmBitsPixel: u16,
+        bmBits: *mut u8,
+    }
+
     #[repr(C)]
     struct BITMAPINFOHEADER {
         biSize: u32,
@@ -495,49 +570,72 @@ fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, u32, u32)> {
 
     const BI_RGB: u32 = 0;
     const DIB_RGB_COLORS: u32 = 0;
-    const DI_NORMAL: u32 = 3;
 
-    #[link(name = "gdi32")]
-    extern "system" {
-        fn CreateCompatibleDC(hdc: isize) -> isize;
-        fn DeleteDC(hdc: isize) -> i32;
-        fn CreateDIBSection(
-            hdc: isize,
-            pbmi: *const BITMAPINFOHEADER,
-            usage: u32,
-            ppvBits: *mut *mut u8,
-            hSection: isize,
-            offset: u32,
-        ) -> isize;
-        fn SelectObject(hdc: isize, h: isize) -> isize;
-        fn DeleteObject(h: isize) -> i32;
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn DrawIconEx(
-            hdc: isize,
-            xLeft: i32,
-            yTop: i32,
-            hicon: isize,
-            cxWidth: i32,
-            cyWidth: i32,
-            istepIfAniCur: u32,
-            hbrFlickerFreeDraw: isize,
-            diFlags: u32,
-        ) -> i32;
-    }
+    let wide: Vec<u16> = OsStr::new(lnk_path.as_os_str())
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
     unsafe {
-        let hdc = CreateCompatibleDC(0);
-        if hdc == 0 {
+        // Get IShellItem from path
+        let mut shell_item: *mut std::ffi::c_void = ptr::null_mut();
+        let hr = SHCreateItemFromParsingName(
+            wide.as_ptr(),
+            ptr::null(),
+            &CLSID_IShellItemImageFactory,
+            &mut shell_item,
+        );
+        if hr != S_OK || shell_item.is_null() {
             return None;
         }
 
-        let bih = BITMAPINFOHEADER {
+        // COM: first field of object is vtable pointer
+        // vtable slots: 0=QI, 1=AddRef, 2=Release, 3=GetImage
+        let vtable_addr = *(shell_item as *mut isize);
+        let vtable = vtable_addr as *const isize;
+
+        let get_image: unsafe extern "system" fn(
+            *mut std::ffi::c_void,
+            SIZE,
+            u32,
+            *mut isize,
+        ) -> i32 = std::mem::transmute(*vtable.offset(3));
+        let release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+            std::mem::transmute(*vtable.offset(2));
+
+        let s = SIZE {
+            cx: size as i32,
+            cy: size as i32,
+        };
+        let mut hbmp: isize = 0;
+        let hr = get_image(shell_item, s, SIIGBF_RESIZETOFIT, &mut hbmp);
+        release(shell_item);
+
+        if hr != S_OK || hbmp == 0 {
+            return None;
+        }
+
+        // Get bitmap dimensions
+        let mut bm: BITMAP = std::mem::zeroed();
+        if GetObjectW(hbmp, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut _ as *mut std::ffi::c_void) == 0 {
+            DeleteObject(hbmp);
+            return None;
+        }
+
+        let w = bm.bmWidth as u32;
+        let h = bm.bmHeight as u32;
+
+        // Create a DIB section to receive pixel data
+        let hdc = CreateCompatibleDC(0);
+        if hdc == 0 {
+            DeleteObject(hbmp);
+            return None;
+        }
+
+        let mut bih = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: size,
-            biHeight: -size,
+            biWidth: w as i32,
+            biHeight: -(h as i32),
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB,
@@ -549,22 +647,25 @@ fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, u32, u32)> {
         };
 
         let mut pixels_ptr: *mut u8 = ptr::null_mut();
-        let hbmp = CreateDIBSection(hdc, &bih, DIB_RGB_COLORS, &mut pixels_ptr, 0, 0);
-        if hbmp == 0 {
+        let dib = CreateDIBSection(hdc, &mut bih, DIB_RGB_COLORS, &mut pixels_ptr, 0, 0);
+        if dib == 0 {
             DeleteDC(hdc);
+            DeleteObject(hbmp);
             return None;
         }
 
-        let old = SelectObject(hdc, hbmp);
-        DrawIconEx(hdc, 0, 0, hicon, size, size, 0, 0, DI_NORMAL);
+        let old = SelectObject(hdc, dib);
+        let len = (w * h * 4) as usize;
+        GetDIBits(hdc, hbmp, 0, h, pixels_ptr, &mut bih, DIB_RGB_COLORS);
         SelectObject(hdc, old);
 
-        let len = (size * size * 4) as usize;
+        DeleteObject(dib);
+        DeleteDC(hdc);
+        DeleteObject(hbmp);
+
         let bgra = std::slice::from_raw_parts(pixels_ptr, len).to_vec();
 
-        DeleteObject(hbmp);
-        DeleteDC(hdc);
-
+        // BGRA -> RGBA
         let mut rgba = Vec::with_capacity(len);
         for pixel in bgra.chunks_exact(4) {
             rgba.push(pixel[2]);
@@ -573,84 +674,19 @@ fn hicon_to_rgba(hicon: isize, size: i32) -> Option<(Vec<u8>, u32, u32)> {
             rgba.push(pixel[3]);
         }
 
-        // skip all-white icons (failed extraction)
-        let all_white = rgba
-            .chunks_exact(4)
-            .all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255);
+        // skip all-white (failed extraction)
+        let all_white = rgba.chunks_exact(4).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255);
         if all_white {
             return None;
         }
 
-        Some((rgba, size as u32, size as u32))
+        Some((rgba, w, h))
     }
-}
-
-#[cfg(target_os = "windows")]
-fn extract_icon_from_lnk(lnk_path: &Path) -> Option<(Vec<u8>, u32, u32)> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    const SHGFI_ICON: u32 = 0x00000100;
-
-    #[repr(C)]
-    struct SHFILEINFOW {
-        hIcon: isize,
-        iIcon: i32,
-        dwAttributes: u32,
-        szDisplayName: [u16; 260],
-        szTypeName: [u16; 80],
-    }
-
-    #[link(name = "shell32")]
-    extern "system" {
-        fn SHGetFileInfoW(
-            pszPath: *const u16,
-            dwFileAttributes: u32,
-            psfi: *mut SHFILEINFOW,
-            cbFileInfo: u32,
-            uFlags: u32,
-        ) -> usize;
-    }
-
-    let wide: Vec<u16> = OsStr::new(lnk_path.as_os_str())
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let mut shfi: SHFILEINFOW = unsafe { std::mem::zeroed() };
-    let ret = unsafe {
-        SHGetFileInfoW(
-            wide.as_ptr(),
-            0,
-            &mut shfi,
-            std::mem::size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON,
-        )
-    };
-    if ret == 0 || shfi.hIcon == 0 {
-        return None;
-    }
-
-    let icon = shfi.hIcon;
-    let rgba = hicon_to_rgba(icon, 32);
-    unsafe {
-        destroy_icon(icon);
-    }
-    rgba
 }
 
 #[cfg(not(target_os = "windows"))]
-fn extract_icon_from_lnk(_lnk_path: &Path) -> Option<(Vec<u8>, u32, u32)> {
+fn shell_item_icon(_path: &Path, _size: u32) -> Option<(Vec<u8>, u32, u32)> {
     None
-}
-
-#[cfg(target_os = "windows")]
-unsafe fn destroy_icon(hicon: isize) {
-    #[link(name = "user32")]
-    extern "system" {
-        fn DestroyIcon(hIcon: isize) -> i32;
-    }
-    DestroyIcon(hicon);
 }
 
 // ---------------------------------------------------------------------------
