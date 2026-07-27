@@ -29,9 +29,23 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Self {
         let path = Self::config_path();
+        if !path.exists() {
+            let old = Self::old_config_path();
+            if old.exists() {
+                // migrate from old JSON config
+                if let Some(cfg) = std::fs::read_to_string(&old)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<Config>(&s).ok())
+                {
+                    cfg.save();
+                    let _ = std::fs::remove_file(&old);
+                    return cfg;
+                }
+            }
+        }
         std::fs::read_to_string(&path)
             .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .and_then(|s| toml::from_str(&s).ok())
             .unwrap_or_else(|| {
                 let cfg = Config::default();
                 cfg.save();
@@ -44,21 +58,34 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        if let Ok(s) = serde_json::to_string_pretty(self) {
+        if let Ok(s) = toml::to_string_pretty(self) {
             std::fs::write(&path, s).ok();
         }
     }
 
     fn config_path() -> PathBuf {
-        let mut path = if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home)
-        } else if let Ok(profile) = std::env::var("USERPROFILE") {
-            PathBuf::from(profile)
-        } else {
-            PathBuf::from(".")
-        };
-        path.push(".element");
+        let mut path = data_dir();
+        path.push("config.toml");
+        path
+    }
+
+    fn old_config_path() -> PathBuf {
+        let mut path = data_dir();
         path.push("config.json");
         path
+    }
+}
+
+fn data_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push(".element");
+        p
+    } else if let Ok(profile) = std::env::var("USERPROFILE") {
+        let mut p = PathBuf::from(profile);
+        p.push(".element");
+        p
+    } else {
+        PathBuf::from(".element")
     }
 }

@@ -1,6 +1,6 @@
 # Element — Living State Document
 
-> **Last updated:** 2026-07-27 (Phase 4 — Slint rewrite)
+> **Last updated:** 2026-07-27 (Phase 5 — TOML, debounce, Escape, icons)
 > **Purpose:** Single source of truth for architecture decisions, project state, and next moves.
 
 ---
@@ -17,18 +17,20 @@ Core interaction: global hotkey → floating acrylic search bar → type to sear
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| UI Framework | **Slint 1.17** | Rust-native, GPU-accelerated, declarative UI. Minimal binary size, no browser/JS runtime. |
+| UI Framework | **Slint 1.17** | Rust-native, GPU-accelerated, declarative UI. |
 | Windowing | Built into Slint | Cross-platform (Win32, X11, Wayland, macOS). |
-| Global Hotkey | `WH_KEYBOARD_LL` low-level hook | Reliable capture across all apps. Falls back to `GetAsyncKeyState` polling. |
-| Brand | Element, `#6D4AFA` primary | Brand assets in `brandkit/`. |
-| Config | `serde_json` → `~/.element/config.json` | Key: hotkey, window_width, window_height, search_url, search_dirs. |
-| App scanning | `walkdir` → `%ProgramData%` / `%APPDATA%` Start Menu `*.lnk` | Windows-only. |
+| Global Hotkey | `WH_KEYBOARD_LL` low-level hook | Captures hotkey + Escape. Polled by Slint Timer every 200ms. |
+| Config | **TOML** via `toml` crate | `~/.element/config.toml`, migrates from old `config.json`. |
+| App scanning | `walkdir` → Start Menu `*.lnk` | Extracts **icons** via Win32 `SHGetFileInfoW` + GDI. |
+| Icon extraction | GDI `CreateDIBSection` + `DrawIconEx` | Converts HICON → RGBA pixel buffer → `slint::Image`. |
+| Debounce | Slint `Timer` (SingleShot) | Restarted on every keystroke; search fires after `debounce_delay_ms`. |
 | Web search | `webbrowser` crate | Opens configured `search_url` with query substituted for `%s`. |
-| Calculator | `evalexpr = "11"` | Detects math expressions, evaluates them. |
-| Emoji | `emojis = "0.6"` | Search by name or shortcode. |
-| Clipboard | `arboard` (copy only) | Copy results (calc, emoji, clipboard entries) to clipboard. |
+| Calculator | `evalexpr = "11"` | Detects math expressions, evaluates, copies result. |
+| Emoji | `emojis = "0.6"` | Search by name or shortcode on `emoji`/`:` prefix. |
+| Clipboard | `arboard` (write only) | Copy results to clipboard. |
 | Clipboard DB | `rusqlite` (bundled) | `clipboard_entries` table in `~/.element/element.db`. |
-| DWM Blur | `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW)` | Acrylic backdrop effect on the window. |
+| DWM Blur | `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW)` | Acrylic backdrop. |
+| Image processing | `image = "0.25"` | (Installed, available for future PNG save/cache) |
 | Living Doc | `ELEMENT_STATE.md` | This file. |
 
 ---
@@ -38,47 +40,49 @@ Core interaction: global hotkey → floating acrylic search bar → type to sear
 ```
 element/
 ├── src/
-│   ├── main.rs       # Slint entry, hotkey hook, timer polling, DWM blur
-│   ├── app.rs        # SearchEngine: app scan, calc, emoji, clipboard, web search
-│   ├── config.rs     # JSON config (hotkey, window size, search_url, search_dirs)
+│   ├── main.rs       # Slint entry, hotkey + Escape hook, timer, DWM blur, debounce
+│   ├── app.rs        # SearchEngine: app scan, icon extraction, calc, emoji, clipboard, web
+│   ├── config.rs     # TOML config with JSON migration
 │   └── database.rs   # SQLite — clipboard_entries table
 ├── ui/
-│   └── main.slint    # Slint UI: Window → TextInput + placeholder + ListView
+│   └── main.slint    # Slint UI: Window → TextInput + Image + ListView
 ├── build.rs          # slint_build::compile("ui/main.slint")
 ├── brandkit/         # Brand assets
 ├── Cargo.toml
 └── ELEMENT_STATE.md
 ```
 
-### Search flow
+### Search flow (debounced)
 
 ```
-User types → on_input_changed callback
-  → SearchEngine::search(query)
-    → 1. Calculator? (digits/operators detected)
-    → 2. Emoji? (query starts with "emoji" or ":")
-    → 3. Clipboard? (query is "cbhist" or starts with "clip")
-    → 4. App search? (fuzzy match installed .lnk names)
-    → 5. Web search fallback (always present)
-  → VecModel<ResultItem> updated in ListView
+User types → on_input_changed
+  → restart debounce Timer (SingleShot, debounce_delay_ms)
+  → timer fires → SearchEngine::search(query)
+    → 1. Calculator?
+    → 2. Emoji? ("emoji" or ":" prefix)
+    → 3. Clipboard? ("cbhist" or "clip")
+    → 4. App search (fuzzy match + extracted icon)
+    → 5. Web search fallback
+  → VecModel<ResultItem> updated with icons
 ```
 
-### Activate flow
+### Icon extraction
 
 ```
-User presses Enter → on_item_selected(index)
-  → SearchEngine::activate(kind, title, input)
-    → "app":       cmd /c start "" "<path>"
-    → "websearch": webbrowser::open(search_url.replace("%s", query))
-    → "calc":      arboard::Clipboard::set_text(result)
-    → "emoji":     arboard::Clipboard::set_text(emoji_char)
-    → "clipboard": arboard::Clipboard::set_text(text)
-  → window.hide()
+.lnk path → SHGetFileInfoW(SHGFI_ICON | SHGFI_SMALLICON) → HICON
+  → CreateCompatibleDC + CreateDIBSection(32bpp)
+  → DrawIconEx → BGRA pixel buffer
+  → BGRA→RGBA swap → slint::Image::from_rgba8()
 ```
 
-### Hotkey system
+### Hotkey + Escape
 
-`SetWindowsHookExW(WH_KEYBOARD_LL=13)` captures low-level keyboard events. Hook proc checks virtual key + modifier state (`GetAsyncKeyState`). When the combo matches, sets `AtomicBool`. A Slint `Timer(Mode::Repeated, 200ms)` polls the flag and toggles `window.show()` / `window.hide()`.
+```
+WH_KEYBOARD_LL hook proc:
+  - alt+space match → HOTKEY_TRIGGERED = true
+  - Escape (vk=0x1B) + WINDOW_VISIBLE → ESCAPE_TRIGGERED = true
+Slint Timer::Repeated(200ms) polls both flags
+```
 
 ---
 
@@ -86,22 +90,18 @@ User presses Enter → on_item_selected(index)
 
 ### Completed
 
-- **Phase 1–3**: Original iced/GPUI prototypes with text editor, module system, notes, slash commands (all deleted).
-- **Phase 4 — Slint rewrite** (current):
-  - Framework swap: iced + GPUI → Slint 1.17.
-  - `ui/main.slint` — Window with TextInput, placeholder Text, ListView of ResultItem.
-  - `Cargo.toml` — slint, slint-build, walkdir, webbrowser, arboard, emojis, evalexpr, rusqlite.
-  - `build.rs` — `slint_build::compile("ui/main.slint")`.
-  - `src/main.rs` — Slint entry, WH_KEYBOARD_LL hook + timer polling, DWM acrylic backdrop.
-  - `src/app.rs` — SearchEngine: app scanning (Start Menu .lnk), calculator, emoji, clipboard, web search.
-  - `src/config.rs` — Config with hotkey, search_url, search_dirs, window width/height.
-  - `src/database.rs` — clipboard_entries table, `load_clipboard()`.
-  - Deleted: `src/editor/`, `src/module.rs`, `src/overlay.rs`, `src/clipboard.rs`, `src/style.rs`.
-  - Committed as `be40ee2`.
+- **Phase 1–3**: Original iced/GPUI prototypes (deleted).
+- **Phase 4 — Slint rewrite**: Unified search bar, app launcher, web search, calc, emoji, clipboard, DWM blur. Committed `be40ee2`.
+- **Phase 5 — Polish** (current):
+  - **TOML config**: `serde_json` → `toml`, auto-migration from `config.json` to `config.toml`.
+  - **Debounce**: Slint `Timer(Mode::SingleShot)` restarted on each keystroke. Configurable delay.
+  - **Escape to close**: Captured in `WH_KEYBOARD_LL` hook when window is visible. Uses `WINDOW_VISIBLE` atomic flag tracked on show/hide.
+  - **App icons**: Win32 GDI icon extraction from `.lnk` shortcuts. `SHGetFileInfoW` → HICON → GDI `CreateDIBSection` + `DrawIconEx` → BGRA→RGBA conversion → `slint::Image::from_rgba8()`. Icons displayed as 20×20 `Image` elements in search results.
+  - Committed as `...` (pending).
 
 ### Active
 
-- **Tray icon**: Not implemented — deferred to user.
+- Feature-complete for current scope.
 
 ### Blocked
 
@@ -112,10 +112,10 @@ User presses Enter → on_item_selected(index)
 ## 5. Next Moves
 
 1. **System tray icon** — `tray-icon` or `windows-rs` for background presence.
-2. **Auto-start** — Windows registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-3. **File search** — Walk `search_dirs`, index filenames, add to unified search results.
-4. **Settings panel** — In-app UI for hotkey, search URL, directories (or keep as config file).
-5. **Escape to close** — Keyboard event handling in Slint (deferred; user will handle UI).
+2. **Auto-start** — Windows registry `HKCU\...\Run`.
+3. **File search** — Walk `search_dirs`, index filenames.
+4. **Settings panel** — In-app UI for hotkey, search URL, directories.
+5. **Unit conversions** — Like RustCast.
 
 ---
 
@@ -123,10 +123,11 @@ User presses Enter → on_item_selected(index)
 
 | Risk | Mitigation |
 |------|-----------|
-| WH_KEYBOARD_LL may conflict with other hooks | Runs with `CallNextHookEx` chain; atomic flag, minimal overhead |
-| DWM blur unsupported on older Windows | `DwmSetWindowAttribute` may silently fail — window still works with solid background |
-| `arboard` may fail on headless/remote sessions | Clipboard operations are best-effort |
-| Slint API changes between versions | Pinned to 1.17.0 in `Cargo.toml` |
+| GDI icon extraction may fail on some .lnk files | Falls back to `None`; window still works with no icon |
+| WH_KEYBOARD_LL may conflict | `CallNextHookEx` chains correctly; atomic flags, minimal overhead |
+| DWM blur unsupported | Falls back to solid background |
+| `arboard` may fail | Best-effort clipboard operations |
+| Slint API changes | Pinned to 1.17.0 |
 
 ---
 

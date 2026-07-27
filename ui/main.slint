@@ -4,6 +4,7 @@ export struct ResultItem {
     title: string,
     subtitle: string,
     kind: string,
+    icon: image,
 }
 
 export component SearchWindow inherits Window {
@@ -62,17 +63,28 @@ export component SearchWindow inherits Window {
                     HorizontalLayout {
                         padding-left: 14px;
                         padding-right: 14px;
-                        spacing: 12px;
+                        spacing: 10px;
+                        alignment: start;
 
-                        Text {
-                            text: item.title;
-                            color: #F5F3FA;
-                            font-size: 13px;
+                        Image {
+                            width: 20px;
+                            height: 20px;
+                            source: item.icon;
+                            y: (parent.height - self.height) / 2;
                         }
-                        Text {
-                            text: item.subtitle;
-                            color: #9999A5;
-                            font-size: 12px;
+
+                        VerticalLayout {
+                            spacing: 0;
+                            Text {
+                                text: item.title;
+                                color: #F5F3FA;
+                                font-size: 13px;
+                            }
+                            Text {
+                                text: item.subtitle;
+                                color: #9999A5;
+                                font-size: 12px;
+                            }
                         }
                     }
                 }

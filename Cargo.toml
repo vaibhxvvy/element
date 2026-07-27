@@ -1,12 +1,13 @@
 [package]
 name = "element"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "A fast local launcher and search tool for Windows — built with Slint."
 
 [dependencies]
 slint = "1.9"
 serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 emojis = "0.6"
@@ -14,6 +15,7 @@ evalexpr = "11"
 webbrowser = "1.0"
 arboard = "3.3"
 walkdir = "2"
+image = "0.25"
 
 [build-dependencies]
 slint-build = "1.9"
