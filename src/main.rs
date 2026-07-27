@@ -29,6 +29,8 @@ fn main() {
     let win_w = config.window_width as i32;
     let win_h = config.window_height as i32;
 
+    set_window_icon();
+
     let engine = SearchEngine::new(&config, db.clone());
     let _ = ui.window().hide();
 
@@ -194,6 +196,54 @@ fn center_window(w: i32, h: i32) {
 
 #[cfg(not(target_os = "windows"))]
 fn center_window(_w: i32, _h: i32) {}
+
+#[cfg(target_os = "windows")]
+fn set_window_icon() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let icon_paths = [
+        "brandkit\\windows\\element.ico",
+        "brandkit\\app-icons\\icon-256.png",
+        "brandkit\\app-icons\\icon-128.png",
+    ];
+    for p in &icon_paths {
+        let path = std::path::Path::new(p);
+        if path.exists() {
+            let wide: Vec<u16> = OsStr::new(path.as_os_str())
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            #[link(name = "user32")]
+            extern "system" {
+                fn LoadImageW(hInst: isize, name: *const u16, typ: u32, cx: i32, cy: i32, fuLoad: u32) -> isize;
+                fn SendMessageW(h: isize, msg: u32, wp: usize, lp: isize) -> isize;
+            }
+            const IMAGE_ICON: u32 = 1;
+            const LR_LOADFROMFILE: u32 = 0x00000010;
+            const WM_SETICON: u32 = 0x0080;
+            const ICON_SMALL: usize = 0;
+            const ICON_BIG: usize = 1;
+            unsafe {
+                let small = LoadImageW(0, wide.as_ptr(), IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+                let big = LoadImageW(0, wide.as_ptr(), IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+                if let Some(hwnd) = get_window_hwnd() {
+                    if small != 0 {
+                        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small);
+                    }
+                    if big != 0 {
+                        SendMessageW(hwnd, WM_SETICON, ICON_BIG, big);
+                    }
+                }
+                // Don't DestroyIcon here — ownership transfers to the window
+            }
+            return;
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_window_icon() {}
 
 fn rgba_to_image(data: &[u8], width: u32, height: u32) -> Option<Image> {
     if data.len() < (width * height * 4) as usize {
