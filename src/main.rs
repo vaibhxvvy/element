@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 mod app;
 mod config;
@@ -9,13 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 slint::include_modules!();
-use slint::{Image, Model, Rgba8Pixel, SharedPixelBuffer};
+use slint::{Image, Model, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::app::SearchEngine;
 
 static HOTKEY_TRIGGERED: AtomicBool = AtomicBool::new(false);
 static ESCAPE_TRIGGERED: AtomicBool = AtomicBool::new(false);
 static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(false);
+static NAV_UP: AtomicBool = AtomicBool::new(false);
+static NAV_DOWN: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     let config = config::Config::load();
@@ -24,12 +26,11 @@ fn main() {
     install_hotkey(&config.hotkey);
 
     let ui = SearchWindow::new().unwrap();
+    let win_w = config.window_width as i32;
+    let win_h = config.window_height as i32;
 
     let engine = SearchEngine::new(&config, db.clone());
     let _ = ui.window().hide();
-
-    #[cfg(target_os = "windows")]
-    apply_dwm_blur();
 
     let engine_hot = engine.clone();
     let ui_hot = ui.as_weak();
@@ -38,27 +39,40 @@ fn main() {
         slint::TimerMode::Repeated,
         std::time::Duration::from_millis(200),
         move || {
-            if HOTKEY_TRIGGERED.swap(false, Ordering::Relaxed) {
-                if let Some(ui) = ui_hot.upgrade() {
+            if let Some(ui) = ui_hot.upgrade() {
+                if HOTKEY_TRIGGERED.swap(false, Ordering::Relaxed) {
                     if ui.window().is_visible() {
                         let _ = ui.window().hide();
                         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
                     } else {
                         engine_hot.refresh_apps();
-                        let _ = ui.window().show();
-                        WINDOW_VISIBLE.store(true, Ordering::Relaxed);
+                        center_window(win_w, win_h);
+                        ui.window().show().ok();
                         ui.set_input_text(String::new().into());
                         ui.set_selected_index(-1);
-                        ui.set_results(
-                            Rc::new(slint::VecModel::from(vec![])).into(),
-                        );
+                        ui.set_results(Rc::new(VecModel::from(vec![])).into());
+                        WINDOW_VISIBLE.store(true, Ordering::Relaxed);
                     }
                 }
-            }
-            if ESCAPE_TRIGGERED.swap(false, Ordering::Relaxed) {
-                if let Some(ui) = ui_hot.upgrade() {
+                if ESCAPE_TRIGGERED.swap(false, Ordering::Relaxed) {
                     let _ = ui.window().hide();
                     WINDOW_VISIBLE.store(false, Ordering::Relaxed);
+                }
+                if NAV_UP.swap(false, Ordering::Relaxed) {
+                    let idx = ui.get_selected_index();
+                    let count = ui.get_result_count();
+                    if count > 0 {
+                        let new = if idx <= 0 { count - 1 } else { idx - 1 };
+                        ui.set_selected_index(new);
+                    }
+                }
+                if NAV_DOWN.swap(false, Ordering::Relaxed) {
+                    let idx = ui.get_selected_index();
+                    let count = ui.get_result_count();
+                    if count > 0 {
+                        let new = if idx >= count - 1 { 0 } else { idx + 1 };
+                        ui.set_selected_index(new);
+                    }
                 }
             }
         },
@@ -79,6 +93,7 @@ fn main() {
                 std::time::Duration::from_millis(debounce_ms),
                 move || {
                     let results = es.search(&text);
+                    let count = results.len() as i32;
                     let model: Vec<ResultItem> = results
                         .into_iter()
                         .map(|r| {
@@ -93,7 +108,8 @@ fn main() {
                             }
                         })
                         .collect();
-                    ui.set_results(Rc::new(slint::VecModel::from(model)).into());
+                    ui.set_result_count(count);
+                    ui.set_results(Rc::new(VecModel::from(model)).into());
                     ui.set_selected_index(if text.is_empty() { -1 } else { 0 });
                 },
             );
@@ -122,8 +138,61 @@ fn main() {
         }
     });
 
+    ui.on_navigate_up(move || {});
+    ui.on_navigate_down(move || {});
+
+    if cfg!(target_os = "windows") {
+        apply_dwm_blur();
+    }
+
     ui.run().unwrap();
 }
+
+#[cfg(target_os = "windows")]
+fn center_window(w: i32, h: i32) {
+    use std::sync::OnceLock;
+    static HWND: OnceLock<isize> = OnceLock::new();
+    if HWND.get().is_none() {
+        #[link(name = "user32")]
+        extern "system" {
+            fn EnumWindows(f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
+            fn GetWindowThreadProcessId(h: isize, p: *mut u32) -> u32;
+        }
+        unsafe {
+            extern "system" fn ep(h: isize, _: isize) -> i32 {
+                let mut pid: u32 = 0;
+                unsafe { GetWindowThreadProcessId(h, &mut pid); }
+                if pid == std::process::id() {
+                    let _ = HWND.set(h);
+                    return 0;
+                }
+                1
+            }
+            EnumWindows(ep, 0);
+        }
+    }
+    if let Some(&hwnd) = HWND.get() {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetSystemMetrics(nIndex: i32) -> i32;
+            fn SetWindowPos(h: isize, hAfter: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+        }
+        const SM_CXSCREEN: i32 = 0;
+        const SM_CYSCREEN: i32 = 1;
+        const SWP_NOZORDER: u32 = 0x0004;
+        const SWP_NOSIZE: u32 = 0x0001;
+        unsafe {
+            let cx = GetSystemMetrics(SM_CXSCREEN);
+            let cy = GetSystemMetrics(SM_CYSCREEN);
+            let x = (cx - w) / 2;
+            let y = (cy - h) / 3;
+            SetWindowPos(hwnd, 0, x, y, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn center_window(_w: i32, _h: i32) {}
 
 fn rgba_to_image(data: &[u8], width: u32, height: u32) -> Option<Image> {
     if data.len() < (width * height * 4) as usize {
@@ -140,51 +209,37 @@ fn rgba_to_image(data: &[u8], width: u32, height: u32) -> Option<Image> {
 
 #[cfg(target_os = "windows")]
 fn apply_dwm_blur() {
-    use std::sync::atomic::AtomicBool;
-    static DONE: AtomicBool = AtomicBool::new(false);
-    if DONE.swap(true, Ordering::Relaxed) {
+    use std::sync::OnceLock;
+    static HWND: OnceLock<isize> = OnceLock::new();
+    if HWND.get().is_some() {
         return;
     }
     #[link(name = "user32")]
     extern "system" {
-        fn EnumWindows(
-            f: unsafe extern "system" fn(isize, isize) -> i32,
-            l: isize,
-        ) -> i32;
+        fn EnumWindows(f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
         fn GetWindowThreadProcessId(h: isize, p: *mut u32) -> u32;
     }
     #[link(name = "dwmapi")]
     extern "system" {
-        fn DwmSetWindowAttribute(
-            h: isize,
-            a: u32,
-            v: *const std::ffi::c_void,
-            s: u32,
-        ) -> i32;
+        fn DwmSetWindowAttribute(h: isize, a: u32, v: *const std::ffi::c_void, s: u32) -> i32;
     }
     unsafe {
-        static mut HWND: isize = 0;
-        unsafe extern "system" fn ep(h: isize, _: isize) -> i32 {
+        extern "system" fn ep(h: isize, _: isize) -> i32 {
             let mut pid: u32 = 0;
-            GetWindowThreadProcessId(h, &mut pid);
+            unsafe { GetWindowThreadProcessId(h, &mut pid); }
             if pid == std::process::id() {
-                HWND = h;
+                let _ = HWND.set(h);
                 return 0;
             }
             1
         }
         EnumWindows(ep, 0);
-        if HWND == 0 {
-            DONE.store(false, Ordering::Relaxed);
-            return;
+    }
+    if let Some(&hwnd) = HWND.get() {
+        unsafe {
+            let backdrop: u32 = 2;
+            DwmSetWindowAttribute(hwnd, 38, &backdrop as *const _ as *const std::ffi::c_void, 4);
         }
-        let backdrop: u32 = 2;
-        DwmSetWindowAttribute(
-            HWND,
-            38,
-            &backdrop as *const _ as *const std::ffi::c_void,
-            4,
-        );
     }
 }
 
@@ -204,6 +259,8 @@ fn install_hotkey(hotkey_str: &str) {
             "ctrl" | "control" => mv.push(0x11),
             "shift" => mv.push(0x10),
             "space" => kv = 0x20,
+            "up" => kv = 0x26,
+            "down" => kv = 0x28,
             _ => {}
         }
     }
@@ -212,12 +269,7 @@ fn install_hotkey(hotkey_str: &str) {
 
     #[link(name = "user32")]
     extern "system" {
-        fn SetWindowsHookExW(
-            i: i32,
-            f: unsafe extern "system" fn(i32, usize, isize) -> isize,
-            m: isize,
-            t: u32,
-        ) -> isize;
+        fn SetWindowsHookExW(i: i32, f: unsafe extern "system" fn(i32, usize, isize) -> isize, m: isize, t: u32) -> isize;
         fn CallNextHookEx(h: isize, c: i32, w: usize, l: isize) -> isize;
         fn GetModuleHandleW(m: *const u16) -> isize;
         fn GetAsyncKeyState(v: i32) -> i16;
@@ -226,6 +278,18 @@ fn install_hotkey(hotkey_str: &str) {
     unsafe extern "system" fn proc(c: i32, w: usize, l: isize) -> isize {
         if c >= 0 && (w as u32 == 0x100 || w as u32 == 0x104) {
             let vk = *(l as *const u32);
+            let visible = WINDOW_VISIBLE.load(Ordering::Relaxed);
+            if vk == 0x1B && visible {
+                ESCAPE_TRIGGERED.store(true, Ordering::Relaxed);
+                return 1;
+            }
+            if visible {
+                match vk {
+                    0x26 => { NAV_UP.store(true, Ordering::Relaxed); return 1; }
+                    0x28 => { NAV_DOWN.store(true, Ordering::Relaxed); return 1; }
+                    _ => {}
+                }
+            }
             if vk == KEY_VK.load(Ordering::Relaxed) as u32 {
                 if let Some(mv) = MOD_VKS.get() {
                     if mv.iter().all(|v| (GetAsyncKeyState(*v as i32) as i32 & 0x8000) != 0) {
@@ -233,10 +297,6 @@ fn install_hotkey(hotkey_str: &str) {
                         return 1;
                     }
                 }
-            }
-            if vk == 0x1B && WINDOW_VISIBLE.load(Ordering::Relaxed) {
-                ESCAPE_TRIGGERED.store(true, Ordering::Relaxed);
-                return 1;
             }
         }
         unsafe { CallNextHookEx(0, c, w, l) }
