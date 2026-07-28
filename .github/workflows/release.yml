@@ -6,6 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
 
 jobs:
   build:
@@ -32,11 +33,21 @@ jobs:
           Copy-Item target/release/element.exe $dir/
           Compress-Archive -Path $dir -DestinationPath "$dir.zip"
 
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem element-*.zip | Select-Object -First 1
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $hash | Out-File -FilePath "$($zip.Name).sha256" -Encoding ascii
+          Write-Output "SHA256: $hash"
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           name: Element ${{ github.ref_name }}
           body_path: CHANGELOG.md
-          files: element-*.zip
+          files: |
+            element-*.zip
+            element-*.sha256
           draft: false
           prerelease: false

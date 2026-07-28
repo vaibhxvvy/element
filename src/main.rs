@@ -560,6 +560,7 @@ struct POINT {
     y: i32,
 }
 
+#[allow(clippy::manual_dangling_ptr)]
 pub fn main() -> iced::Result {
     debug_log::init();
     debug_log!("=== Element v{} starting ===", env!("CARGO_PKG_VERSION"));
@@ -663,7 +664,7 @@ pub fn main() -> iced::Result {
                     uID: 1,
                     uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
                     uCallbackMessage: 0x8000,
-                    hIcon: LoadIconW(0, 32512 as *const u16),
+                    hIcon: LoadIconW(GetModuleHandleW(std::ptr::null()), 1 as *const u16),
                     szTip: [0u16; 128],
                     dwState: 0,
                     dwStateMask: 0,
@@ -767,6 +768,13 @@ pub fn main() -> iced::Result {
 
     debug_log!("starting Iced application...");
 
+    let window_icon = iced::window::icon::from_file_data(
+        include_bytes!("../brandkit/windows/element.ico"),
+        None,
+    )
+    .ok();
+    debug_log!("window icon loaded: {}", window_icon.is_some());
+
     iced::application("Element", ui::update, ui::view)
         .theme(|_| Theme::Dark)
         .window(window::Settings {
@@ -774,6 +782,7 @@ pub fn main() -> iced::Result {
             level: window::Level::AlwaysOnTop,
             size: init_win_size,
             visible: false,
+            icon: window_icon,
             ..Default::default()
         })
         .subscription(ui::subscription)

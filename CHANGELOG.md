@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.0.0 (2026-07-29)
+
+### Added
+- Window icon from brand kit (`element.ico`) embedded in the executable via `include_bytes!`
+- Windows version info resource (`brandkit/windows/element.rc`) with proper metadata
+- MIT `LICENSE` file
+- Comprehensive `.gitignore` for Rust/IDE/build artifacts
+- Inno Setup installer script (`installer.iss`)
+- Winget publish manifests under `winget/vaibhxvvy.Element/`
+- Window `transparent: true` for proper DWM acrylic/alpha-capable swap chain
+
+### Fixed
+- UI rendering on Windows 11 24H2+ where `SetWindowCompositionAttribute` reports success but doesn't apply acrylic — window now uses an alpha-capable swap chain via Iced's `transparent: true`, rendering correctly regardless of acrylic state
+- Theme colors `BG_PRIMARY`, `BG_SELECTED`, `BG_INPUT` made fully opaque to ensure content is always visible
+
+### Changed
+- Version bumped to `1.0.0` — first stable release
+- Window `background_color` set to transparent for proper alpha blending with DWM effects
+
 ## v0.8.0 (unreleased)
 
 ### Added
@@ -8,13 +27,21 @@
 - `ElementError` enum with `thiserror`
 - `Registry.rs` — iterates providers, catches panics
 - `Theme.rs` — named color/spacing/radius tokens used by ui
-- Unit tests: 24 tests covering fuzzy scorer, frecency formula, calculator detection, config round-trip, clipboard
+- Unit tests: 27 tests covering fuzzy scorer, frecency, calculator, config, clipboard, URL encoding
 - CI workflow: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build`
 - Release workflow: tag-triggered build + portable zip + GitHub Release
 - `CHANGELOG.md`
+- `debug_log.rs` — file-based debug logger (~/.element/debug.log) with `debug_log!` macro
+- Low-level keyboard hook fallback (`WH_KEYBOARD_LL`): claims hotkey when `RegisterHotKey` fails
+- Single-instance guard: named mutex (`CreateMutexW`) prevents duplicate processes
+- PID-based window finding: `EnumWindows` + `GetWindowThreadProcessId` replaces `FindWindowW`
+- Safe FFI wrappers: every Win32 API call wrapped with `#[link(name = "...")]`, no `unsafe` at call sites
+- Comprehensive Rust doc comments across all 15 source files
+- `debug.ps1` — PowerShell debug monitor with hotkey conflict detection, session summary
 
 ### Changed
 - Hotkey: `RegisterHotKey` + `PeekMessageW` replaces `GetAsyncKeyState` polling (zero CPU when idle)
+- Hotkey strategy: three-tier fallback (RegisterHotKey → LL hook → fallback combos)
 - System tray: `Shell_NotifyIconW` with hidden message window; left-click toggle, right-click Exit
 - Icons: extracted at 32×32 (was 16×16), cached as PNG to `~/.element/cache/icons/`
 - Icons: `.lnk` binary parser resolves working directory, searches real icon files (PNG/ICO) before falling back to `SHGetFileInfoW`
@@ -22,4 +49,11 @@
 - `data_dir()` consolidated into `config.rs`, duplicate removed from `database.rs`
 - `SearchResult` now carries `provider_id` for registry dispatch
 - All inline colors/spacing replaced with `theme.rs` tokens
+- DWM acrylic fix: `SetWindowCompositionAttribute` called before `WS_EX_LAYERED`; graceful fallback
+- Theme: `Theme::Light` → `Theme::Dark`, full dark palette (#3c3c3c bg, #4d4d4d border, #1e1e1e input)
+- Window effects: DWM rounded corners (DWMWCP_ROUND) replacing acrylic blur
+- Window: `transparent: true` to fix wgpu rendering on Win32 layered windows
 - Main.rs: unnecessary `unsafe` blocks removed, dead `LoadIconW` wrapper removed
+- AGENTS.md: updated with LL hook, single-instance, EnumWindows, safe FFI patterns
+- ELEMENT_STATE.md: updated tech stack, architecture, risks
+- opencode.md: full session log with root cause analysis

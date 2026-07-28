@@ -1,0 +1,16 @@
+PackageIdentifier: vaibhxvvy.Element
+PackageVersion: 1.0.0
+InstallerLocale: en-US
+InstallerType: portable
+InstallModes:
+  - silent
+  - silentWithProgress
+Commands:
+  - element
+ReleaseDate: 2026-07-29
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/vaibhxvvy/element/releases/download/v1.0.0/element-1.0.0-win64.zip
+    InstallerSha256: C0E8066D6FE00C88FF88D2DC585C33AB705D815F7ED1FD6B25D8FCAC1E84BD16
+ManifestType: installer
+ManifestVersion: 1.6.0

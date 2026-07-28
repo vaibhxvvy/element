@@ -1,6 +1,6 @@
 [package]
 name = "element"
-version = "0.7.0"
+version = "1.0.0"
 edition = "2021"
 description = "A fast local launcher and search tool for Windows."
 
@@ -17,3 +17,6 @@ walkdir = "2"
 image = "0.25"
 thiserror = "1"
 iced = { version = "0.13", default-features = false, features = ["wgpu", "system", "image", "tokio"] }
+
+[build-dependencies]
+embed-resource = "3"

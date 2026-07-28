@@ -5,13 +5,12 @@ use iced::Color;
 // background, #4d4d4d full-opacity 2px inset border, rounded corners.
 
 // --- Backgrounds ---
-/// Main container: semi-transparent dark to let DWM acrylic show through.
-/// When DWM acrylic is unavailable, this blends with Theme::Dark background.
-pub const BG_PRIMARY: Color = Color::from_rgba(60.0 / 255.0, 60.0 / 255.0, 60.0 / 255.0, 0.35);
+/// Main container background.
+pub const BG_PRIMARY: Color = Color::from_rgb(60.0 / 255.0, 60.0 / 255.0, 60.0 / 255.0);
 /// Selected result row highlight
-pub const BG_SELECTED: Color = Color::from_rgba(77.0 / 255.0, 77.0 / 255.0, 77.0 / 255.0, 0.5);
+pub const BG_SELECTED: Color = Color::from_rgb(77.0 / 255.0, 77.0 / 255.0, 77.0 / 255.0);
 /// Text input background — slightly darker to distinguish from results
-pub const BG_INPUT: Color = Color::from_rgba(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0, 0.4);
+pub const BG_INPUT: Color = Color::from_rgb(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0);
 
 // --- Text ---
 pub const TEXT_PRIMARY: Color = Color::from_rgb(220.0 / 255.0, 220.0 / 255.0, 220.0 / 255.0);

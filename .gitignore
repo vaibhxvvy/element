@@ -1,1 +1,33 @@
+# Rust
 /target
+
+# Build artifacts
+*.exe
+*.pdb
+*.dll
+*.rlib
+*.lib
+*.exp
+*.obj
+*.o
+*.a
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Element runtime data
+.element/
+
+# Release packaging
+/element-*-win64/
+/element-*.zip
+/element-*.exe
