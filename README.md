@@ -23,9 +23,9 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 
 ## Features
 
-- **Global hotkey** — Toggle the overlay with `Alt+Space` (configurable). Uses `RegisterHotKey` + `PeekMessageW` — zero CPU when idle. **Escape** closes the window.
+- **Global hotkey** — Toggle the overlay with `Alt+Space`. Uses `RegisterHotKey` + `PeekMessageW` — zero CPU when idle. **Escape** closes the window.
 - **System tray** — Icon in the notification area. Left-click toggles overlay; right-click shows Exit menu.
-- **App launcher** — Searches installed applications from the Start Menu with high-quality **32×32 icons** extracted from `.lnk` shortcuts, cached to disk as PNG.
+- **App launcher** — Resolves Start Menu shortcuts to their target `.exe` and launches that executable directly. Prefers shortcut-provided `.ico` files, then falls back to the executable's embedded icon; decoded icons are cached as PNG.
 - **Scored fuzzy matching** — Word boundary, camelCase, consecutive, and early-match bonuses. Type `pwsh` → matches "PowerShell", `wn` → "Windows Notepad", `vsc` → "Visual Studio Code".
 - **Frecency ranking** — Frequently and recently launched apps rise to the top. Uses a SQLite frecency table (`count / days since last use`).
 - **App recommendations** — Show recently/frequently used apps when the search bar opens.
@@ -67,6 +67,7 @@ element/
 │       └── mod.rs     # Iced views (uses theme.rs tokens)
 ├── brandkit/          # Brand assets
 ├── AGENTS.md          # Canonical reference for AI agents
+├── codex.md           # Audit and implementation log for future agents
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── CODE_OF_CONDUCT.md
@@ -142,6 +143,7 @@ pub struct SearchResult {
     pub subtitle: String,
     pub kind: String,         // metadata tag
     pub provider_id: String,  // must match provider.id() for dispatch
+    pub action: String,       // exact provider-owned activation data
     pub icon_rgba: Option<(Vec<u8>, u32, u32)>,  // raw RGBA pixels
     pub score: f64,
 }
@@ -172,10 +174,9 @@ The window starts at `config.window_width × 56` px. On each keystroke, `adaptiv
 
 ### Icon pipeline
 
-1. Check `~/.element/cache/icons/<path-hash>.png` — cache hit = instant load
-2. Parse `.lnk` binary header → extract working directory → search for `icon.png`, `logo.png`, `icon.ico` in app folder and subdirs (including Flutter's `data/flutter_assets/assets/img/`)
-3. Fallback: `SHGetFileInfoW` at 32×32 → GDI `CreateDIBSection` + `DrawIconEx`
-4. Save PNG to cache
+1. Resolve the `.lnk` with `IShellLink` to find the target executable and optional icon location
+2. Prefer the shortcut's `.ico` file; otherwise extract the target executable's embedded 32×32 icon
+3. Cache decoded RGBA pixels at `cache/icons/v2-<source-hash>.png`
 
 ## Installation
 
@@ -206,19 +207,19 @@ clipboard_max_entries = 100
 
 | Key | Description |
 |-----|-------------|
-| `hotkey` | Key combination — modifiers joined by `+`. Supported: `Alt`, `Ctrl`, `Shift`, `Space` |
+| `hotkey` | Reserved for configurable hotkeys; the current Windows registration is `Alt+Space` |
 | `window_width` | Width of the search bar in pixels |
-| `window_height` | Height of the search bar in pixels |
-| `debounce_delay_ms` | Delay before search triggers after you stop typing |
+| `window_height` | Reserved; height adapts to the result list |
+| `debounce_delay_ms` | Reserved; search currently updates immediately |
 | `search_url` | URL template for web searches (`%s` = query) |
-| `search_dirs` | Additional directories to scan for applications |
-| `clipboard_max_entries` | Max clipboard entries to store in SQLite |
+| `search_dirs` | Additional directories to scan recursively for Start Menu-style `.lnk` applications |
+| `clipboard_max_entries` | Maximum clipboard history entries shown |
 
 ## Usage
 
 | Action | Input |
 |--------|-------|
-| Toggle overlay | `Alt+Space` (or configured hotkey) |
+| Toggle overlay | `Alt+Space` |
 | Select result | Click or Enter |
 | Navigate results | Arrow Up / Arrow Down |
 | Close overlay | `Escape` |
@@ -229,7 +230,7 @@ clipboard_max_entries = 100
 ```bash
 cargo build              # debug build
 cargo build --release    # release build (slow with LTO)
-cargo test               # run all 24 tests
+cargo test               # run all 27 tests
 cargo fmt                # format code
 cargo clippy -- -D warnings  # lint (blocking on CI)
 ```

@@ -18,7 +18,7 @@ src/
 ├── main.rs           # Entry point. Spawns background thread, boots Iced.
 │                     # Hotkey: RegisterHotKey(NULL, 1, MOD_ALT|MOD_NOREPEAT, VK_SPACE)
 │                     # Tray: hidden message-only window, left-click toggle, right-click Exit
-│                     # Atomics: HOTKEY_TRIGGERED, HIDE_REQUESTED, VISIBLE,
+│                     # Atomics: HOTKEY_TRIGGERED, HIDE_REQUESTED, EXIT_REQUESTED,
 │                     #          RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH
 │
 ├── app.rs            # SearchEngine — thin registry wrapper.
@@ -44,19 +44,19 @@ src/
 │                     # refresh_all() → catch_unwind per provider.
 │
 ├── theme.rs          # Named constants: BG_PRIMARY, BG_SELECTED, BG_INPUT,
-│                     # TEXT_PRIMARY, TEXT_MUTED, TEXT_PLACEHOLDER, TEXT_ICON,
+│                     # Brand-kit dark-surface colors plus TEXT_PRIMARY, TEXT_MUTED, TEXT_ERROR,
 │                     # ACCENT, RESULT_HEIGHT, ICON_SIZE, SPACING_*, etc.
 │
 ├── providers/
 │   ├── mod.rs        # SearchProvider trait + SearchContext<'a> { config, db }.
-│   ├── apps.rs       # App scan → fuzzy match → frecency → icons (the big one).
+│   ├── apps.rs       # Background app scan → fuzzy match → frecency → icons.
 │   ├── calculator.rs # evalexpr. should_run: contains digits/math ops.
 │   ├── emoji.rs      # emojis crate. should_run: starts with "emoji" or ":".
 │   ├── clipboard.rs  # SQLite clipboard table. should_run: "cbhist" or "clip".
 │   └── websearch.rs  # webbrowser + config.search_url. Always runs, score=-1 (bottom).
 │
 └── ui/
-    └── mod.rs        # Iced views. Uses theme.rs tokens. TextInput + Scrollable.
+    └── mod.rs        # Iced views. Embedded brand mark, focused TextInput, Scrollable.
 ```
 
 ## Provider System
@@ -70,7 +70,8 @@ pub trait SearchProvider: Send + Sync {
     fn should_run(&self, query: &str) -> bool;  // cheap gate check
     fn search(&self, ctx: &SearchContext, query: &str) -> Vec<SearchResult>;
     fn activate(&self, ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError>;
-    fn refresh(&self) {}                         // reload state when overlay opens
+    fn refresh(&self) {}                         // request a provider refresh
+    fn revision(&self) -> u64 { 0 }              // data revision after an async refresh
 }
 ```
 
@@ -80,8 +81,9 @@ pub trait SearchProvider: Send + Sync {
 pub struct SearchResult {
     pub title: String,
     pub subtitle: String,
-    pub kind: String,         // metadata tag — unused by dispatch, kept for debugging
+    pub kind: String,         // metadata tag — used for UI feedback after activation
     pub provider_id: String,  // must match provider.id() for activation dispatch
+    pub action: String,       // exact provider-owned data to activate the result
     pub icon_rgba: Option<(Vec<u8>, u32, u32)>,  // raw RGBA pixels, width, height
     pub score: f64,
 }
@@ -92,7 +94,8 @@ pub struct SearchResult {
 1. Create `src/providers/your_thing.rs`, implement `SearchProvider + Send + Sync`.
 2. Add `pub mod your_thing;` to `src/providers/mod.rs`.
 3. Register in `app.rs::SearchEngine::new()`: `registry.add(Box::new(YourProvider::new()));`
-4. If it needs I/O on overlay open, implement `refresh()`.
+4. If it needs I/O on overlay open, make `refresh()` non-blocking and increment
+   `revision()` only after publishing new data.
 5. Add unit tests for any non-trivial logic.
 6. Run `cargo fmt && cargo clippy -- -D warnings && cargo test`.
 
@@ -128,7 +131,8 @@ handles WM_APP (left-click toggle, right-click menu) and WM_COMMAND (Exit).
 
 ### Adaptive window height
 
-`adaptive_height()` formula: `52 + min(results, 10) × 42 + 8`, capped at 500, min 56.
+`adaptive_height()` formula: `52 + min(results, 10) × 42 + 8`, plus a 24 px status row
+when activation feedback is visible; it is capped at 500, min 56.
 The result is stored in `RESIZE_HEIGHT` atomic and `RESIZE_REQUESTED` is set. The
 background thread reads both and calls `SetWindowPos`. This avoids Iced needing to
 know about Win32 window management.
@@ -146,12 +150,12 @@ from this. Do not duplicate it.
 
 ### Icon pipeline
 
-1. Check `~/.element/cache/icons/<path-hash>.png` — cache hit = instant load.
-2. Parse `.lnk` binary → extract `WORKING_DIR` → search for `icon.png`, `logo.png`,
-   `icon.ico`, etc. in app dir and known subdirs (including Flutter's
-   `data/flutter_assets/assets/img/`).
-3. Fallback: `SHGetFileInfoW` at 32×32 → GDI `CreateDIBSection` + `DrawIconEx`.
-4. Save PNG to cache.
+1. Resolve the Start Menu `.lnk` through `IShellLink` to its target executable and
+   optional icon location.
+2. Require an existing `.exe` target; app activation starts that executable directly.
+3. Prefer a valid `.ico` path from the shortcut; otherwise extract the target
+   executable's embedded icon through `IShellItemImageFactory` at 32×32.
+4. Cache decoded RGBA pixels as `~/.element/cache/icons/v2-<source-hash>.png`.
 
 ### Fuzzy scorer
 
@@ -176,16 +180,15 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 24 tests (fuzzy, frecency, calc, config, clipboard)
+cargo test               # 27 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, URL encoding)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```
 
 ## Platform Code
 
-All Win32 FFI lives in `main.rs` as module-level `extern "system" fn` wrappers
-(e.g. `FindWindowW`, `ShowWindow`, `Shell_NotifyIconW`), plus inline `extern
-"system"` blocks in the background thread for functions only used there.
+Window and tray FFI lives in `main.rs`. Shortcut resolution and icon extraction stay
+isolated in `providers/apps.rs`, where COM is initialized only for the helper call.
 
 Do not scatter `#[cfg(target_os = "windows")]` through providers or UI code.
 If a provider needs platform-specific logic, isolate it behind a helper.
@@ -210,7 +213,7 @@ Do not build these unless the trigger condition is met:
 - DWM acrylic blur not implemented (needs winit HWND handle from Iced).
 - Window centered at fixed position — no multi-monitor DPI awareness.
 - `FindWindowW("Element")` looks up by title — fragile if another window has same title.
-- `selected_index = -1` on empty query means no Enter-activated action without typing.
+- Start Menu shortcuts without an existing direct `.exe` target are intentionally skipped.
 
 ## Common Pitfalls
 
@@ -222,4 +225,6 @@ Do not build these unless the trigger condition is met:
 - When adding a provider dependency to `Cargo.toml`, remember `bundled` for rusqlite.
 - The `SearchResult` must have `provider_id` set correctly or `activate()` will fail
   with "no provider registered with id".
+- Every `SearchResult` must include the exact provider-owned `action` data. Never
+  recover a selected app by its visible title because titles are not unique.
 - Tests that touch the database must use `Database::new_in_memory()`, not `new()`.

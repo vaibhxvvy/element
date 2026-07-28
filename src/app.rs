@@ -10,9 +10,10 @@ use crate::registry::ProviderRegistry;
 pub struct SearchResult {
     pub title: String,
     pub subtitle: String,
-    #[allow(dead_code)]
     pub kind: String,
     pub provider_id: String,
+    /// Provider-owned data used to activate this exact result.
+    pub action: String,
     pub icon_rgba: Option<(Vec<u8>, u32, u32)>,
     pub score: f64,
 }
@@ -26,21 +27,13 @@ pub struct SearchEngine {
 impl SearchEngine {
     pub fn new(config: Arc<Config>, db: Arc<Database>) -> Self {
         let mut registry = ProviderRegistry::new();
-        registry.add(Box::new(
-            crate::providers::apps::AppsProvider::new(),
-        ));
-        registry.add(Box::new(
-            crate::providers::calculator::CalculatorProvider,
-        ));
-        registry.add(Box::new(
-            crate::providers::emoji::EmojiProvider,
-        ));
-        registry.add(Box::new(
-            crate::providers::clipboard::ClipboardProvider,
-        ));
-        registry.add(Box::new(
-            crate::providers::websearch::WebSearchProvider,
-        ));
+        registry.add(Box::new(crate::providers::apps::AppsProvider::new(
+            config.search_dirs.clone(),
+        )));
+        registry.add(Box::new(crate::providers::calculator::CalculatorProvider));
+        registry.add(Box::new(crate::providers::emoji::EmojiProvider));
+        registry.add(Box::new(crate::providers::clipboard::ClipboardProvider));
+        registry.add(Box::new(crate::providers::websearch::WebSearchProvider));
 
         Self {
             config,
@@ -67,5 +60,9 @@ impl SearchEngine {
 
     pub fn refresh_all(&self) {
         self.registry.refresh_all();
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.registry.revision()
     }
 }

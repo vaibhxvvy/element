@@ -36,9 +36,7 @@ impl ProviderRegistry {
             match result {
                 Ok(mut r) => results.append(&mut r),
                 Err(_) => {
-                    eprintln!(
-                        "[element] provider '{id}' panicked during search — results dropped"
-                    );
+                    eprintln!("[element] provider '{id}' panicked during search — results dropped");
                 }
             }
         }
@@ -55,11 +53,7 @@ impl ProviderRegistry {
 
     /// Find the provider that owns `result` and call its activate() inside
     /// catch_unwind.
-    pub fn activate(
-        &self,
-        ctx: &SearchContext,
-        result: &SearchResult,
-    ) -> Result<(), ElementError> {
+    pub fn activate(&self, ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
         for provider in &self.providers {
             if provider.id() != result.provider_id {
                 continue;
@@ -93,5 +87,14 @@ impl ProviderRegistry {
                 eprintln!("[element] provider '{id}' panicked during refresh");
             }
         }
+    }
+
+    /// Return the latest published data revision across all providers.
+    pub fn revision(&self) -> u64 {
+        self.providers
+            .iter()
+            .map(|provider| provider.revision())
+            .max()
+            .unwrap_or_default()
     }
 }

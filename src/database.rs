@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::sync::Mutex;
 
 use crate::config;
@@ -28,9 +28,12 @@ impl Database {
                 app_name TEXT PRIMARY KEY,
                 count INTEGER NOT NULL DEFAULT 1,
                 last_used DATETIME DEFAULT CURRENT_TIMESTAMP
-            );"
-        ).ok();
-        Self { conn: Mutex::new(conn) }
+            );",
+        )
+        .ok();
+        Self {
+            conn: Mutex::new(conn),
+        }
     }
 
     fn db_path() -> std::path::PathBuf {
@@ -55,7 +58,10 @@ impl Database {
                 row.get::<_, String>(0).unwrap_or_default(),
                 row.get::<_, String>(1).unwrap_or_default(),
             ))
-        }).ok().map(|m| m.filter_map(|r| r.ok()).collect()).unwrap_or_default()
+        })
+        .ok()
+        .map(|m| m.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 
     /// Create a temporary in-memory database for testing.
@@ -73,9 +79,12 @@ impl Database {
                 app_name TEXT PRIMARY KEY,
                 count INTEGER NOT NULL DEFAULT 1,
                 last_used DATETIME DEFAULT CURRENT_TIMESTAMP
-            );"
-        ).ok();
-        Self { conn: Mutex::new(conn) }
+            );",
+        )
+        .ok();
+        Self {
+            conn: Mutex::new(conn),
+        }
     }
 
     pub fn record_launch(&self, app_name: &str) {
@@ -87,7 +96,8 @@ impl Database {
             "INSERT INTO frecency (app_name, count, last_used) VALUES (?1, 1, CURRENT_TIMESTAMP)
              ON CONFLICT(app_name) DO UPDATE SET count = count + 1, last_used = CURRENT_TIMESTAMP",
             params![app_name],
-        ).ok();
+        )
+        .ok();
     }
 
     pub fn top_frecency(&self, limit: usize) -> Vec<(String, i64, String)> {
@@ -107,7 +117,10 @@ impl Database {
                 row.get::<_, i64>(1).unwrap_or(0),
                 row.get::<_, String>(2).unwrap_or_default(),
             ))
-        }).ok().map(|m| m.filter_map(|r| r.ok()).collect()).unwrap_or_default()
+        })
+        .ok()
+        .map(|m| m.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 
     /// Return raw count for an app (used by tests).
@@ -121,7 +134,8 @@ impl Database {
             "SELECT count FROM frecency WHERE app_name = ?1",
             params![app_name],
             |row| row.get::<_, i64>(0),
-        ).unwrap_or(0)
+        )
+        .unwrap_or(0)
     }
 
     pub fn frecency_score(&self, app_name: &str) -> f64 {
@@ -205,8 +219,9 @@ mod tests {
                  INSERT INTO clipboard_entries (text_content, created_at)
                  VALUES ('second', '2024-01-02 00:00:00');
                  INSERT INTO clipboard_entries (text_content, created_at)
-                 VALUES ('third',  '2024-01-03 00:00:00');"
-            ).unwrap();
+                 VALUES ('third',  '2024-01-03 00:00:00');",
+            )
+            .unwrap();
         }
         let entries = db.load_clipboard(10);
         assert_eq!(entries.len(), 3);
@@ -223,8 +238,9 @@ mod tests {
             let conn = db.conn.lock().unwrap();
             conn.execute_batch(
                 "INSERT INTO clipboard_entries (text_content)
-                 VALUES ('one'), ('two'), ('three'), ('four'), ('five');"
-            ).unwrap();
+                 VALUES ('one'), ('two'), ('three'), ('four'), ('five');",
+            )
+            .unwrap();
         }
         let entries = db.load_clipboard(3);
         assert_eq!(entries.len(), 3);

@@ -8,7 +8,7 @@ something looks wrong, it might genuinely be wrong. Flag it.
 
 ## Before you start
 
-- Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) — it explains the provider model and why
+- Read [`AGENTS.md`](./AGENTS.md) — it explains the provider model and why
   certain "obvious" bigger ideas (plugins, daemon, multi-crate) aren't there yet.
 - For anything bigger than a small bugfix, open an issue first. Saves you writing code
   that doesn't fit the current sequencing.
@@ -23,7 +23,7 @@ cargo test
 ```
 
 Requirements: Rust 1.77+, Windows (Element is Windows-only for now — see
-`ARCHITECTURE.md` for why cross-platform isn't in scope yet).
+`AGENTS.md` for why cross-platform isn't in scope yet).
 
 ## Before opening a PR
 
@@ -40,7 +40,7 @@ locally first.
 
 Most new capabilities (a new search source, a new prefix command) should be a new
 `SearchProvider`, not a change to `SearchEngine` or the UI. See "Adding a new provider"
-in `ARCHITECTURE.md` for the pattern. If your idea doesn't fit that shape, say so in the
+in `AGENTS.md` for the pattern. If your idea doesn't fit that shape, say so in the
 issue/PR — it might mean the trait needs to grow, which is a valid conversation.
 
 ## Reporting bugs

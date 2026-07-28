@@ -31,10 +31,7 @@ impl SearchProvider for EmojiProvider {
         for emoji in emojis::iter() {
             let name = emoji.name().to_lowercase();
             let codes: Vec<String> = emoji.shortcodes().map(|s| s.to_string()).collect();
-            if term.is_empty()
-                || name.contains(term)
-                || codes.iter().any(|c| c.contains(term))
-            {
+            if term.is_empty() || name.contains(term) || codes.iter().any(|c| c.contains(term)) {
                 results.push(SearchResult {
                     title: format!(
                         "{}  {}",
@@ -47,6 +44,7 @@ impl SearchProvider for EmojiProvider {
                     subtitle: emoji.name().into(),
                     kind: "emoji".into(),
                     provider_id: "emoji".into(),
+                    action: emoji.as_str().into(),
                     icon_rgba: None,
                     score: 500.0 - (results.len() as f64),
                 });
@@ -59,18 +57,12 @@ impl SearchProvider for EmojiProvider {
         results
     }
 
-    fn activate(
-        &self,
-        _ctx: &SearchContext,
-        result: &SearchResult,
-    ) -> Result<(), ElementError> {
-        let emoji_char = result
-            .title
-            .chars()
-            .next()
-            .ok_or_else(|| ElementError::Other("empty emoji".into()))?;
+    fn activate(&self, _ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
+        if result.action.is_empty() {
+            return Err(ElementError::Other("empty emoji".into()));
+        }
         arboard::Clipboard::new()
-            .and_then(|mut c| c.set_text(emoji_char.to_string()))
+            .and_then(|mut c| c.set_text(&result.action))
             .map_err(|e| ElementError::Other(format!("clipboard error: {:?}", e)))
     }
 }

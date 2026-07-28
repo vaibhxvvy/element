@@ -14,6 +14,6 @@
 - [ ] `cargo test` passes
 - [ ] Manually verified: hotkey still opens/closes the bar, existing search behavior unchanged
 - [ ] Added/updated tests if this touches scoring, ranking, parsing, or config
-- [ ] If this adds a new `SearchProvider`, it's registered and follows the pattern in `ARCHITECTURE.md`
+- [ ] If this adds a new `SearchProvider`, it's registered and follows the pattern in `AGENTS.md`
 
 ## Screenshots / recording (if UI-affecting)

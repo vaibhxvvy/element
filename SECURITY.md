@@ -26,7 +26,7 @@ Include:
 
 ## What's out of scope (for now)
 
-- Third-party plugin sandboxing — there is no plugin system yet, see `ARCHITECTURE.md`
+- Third-party plugin sandboxing — there is no plugin system yet, see `AGENTS.md`
 - Network-facing attack surface — Element does not currently make outbound requests
   except opening the configured web-search URL in the user's default browser
 

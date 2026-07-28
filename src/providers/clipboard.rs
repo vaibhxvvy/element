@@ -20,7 +20,8 @@ impl SearchProvider for ClipboardProvider {
 
     fn search(&self, ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
         let _ = query;
-        let entries = ctx.db.load_clipboard(20);
+        let limit = ctx.config.clipboard_max_entries.max(1) as usize;
+        let entries = ctx.db.load_clipboard(limit);
         entries
             .into_iter()
             .map(|(text, ts)| {
@@ -36,6 +37,7 @@ impl SearchProvider for ClipboardProvider {
                     subtitle: format!("Clipboard \u{00b7} {}", ts),
                     kind: "clipboard".into(),
                     provider_id: "clipboard".into(),
+                    action: text,
                     icon_rgba: None,
                     score: 200.0,
                 }
@@ -43,13 +45,9 @@ impl SearchProvider for ClipboardProvider {
             .collect()
     }
 
-    fn activate(
-        &self,
-        _ctx: &SearchContext,
-        result: &SearchResult,
-    ) -> Result<(), ElementError> {
+    fn activate(&self, _ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
         arboard::Clipboard::new()
-            .and_then(|mut c| c.set_text(&result.title))
+            .and_then(|mut c| c.set_text(&result.action))
             .map_err(|e| ElementError::Other(format!("clipboard error: {:?}", e)))
     }
 }

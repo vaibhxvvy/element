@@ -13,7 +13,7 @@ What are you trying to accomplish that's currently hard or impossible?
 
 **Proposed shape (optional)**
 If this is a new search capability, does it fit as a `SearchProvider`
-(see `ARCHITECTURE.md`)? If it's something bigger (platform port, plugin system, etc.),
+(see `AGENTS.md`)? If it's something bigger (platform port, plugin system, etc.),
 say so explicitly — those go through more design discussion before implementation.
 
 **Alternatives considered**

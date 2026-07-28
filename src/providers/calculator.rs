@@ -15,19 +15,20 @@ impl SearchProvider for CalculatorProvider {
 
     fn should_run(&self, query: &str) -> bool {
         query.chars().any(|c| {
-            c.is_ascii_digit()
-                || matches!(c, '+' | '-' | '*' | '/' | 'x' | '÷' | '(' | ')')
+            c.is_ascii_digit() || matches!(c, '+' | '-' | '*' | '/' | 'x' | '÷' | '(' | ')')
         })
     }
 
     fn search(&self, _ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
         let expr = query.replace('x', "*").replace('÷', "/");
         if let Ok(val) = evalexpr::eval(&expr) {
+            let output = val.to_string();
             vec![SearchResult {
-                title: format!("= {}", val),
+                title: format!("= {output}"),
                 subtitle: format!("Calc: {}", query),
                 kind: "calc".into(),
                 provider_id: "calculator".into(),
+                action: output,
                 icon_rgba: None,
                 score: 1000.0,
             }]
@@ -36,14 +37,9 @@ impl SearchProvider for CalculatorProvider {
         }
     }
 
-    fn activate(
-        &self,
-        _ctx: &SearchContext,
-        result: &SearchResult,
-    ) -> Result<(), ElementError> {
-        let text = result.title.trim_start_matches("= ");
+    fn activate(&self, _ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
         arboard::Clipboard::new()
-            .and_then(|mut c| c.set_text(text))
+            .and_then(|mut c| c.set_text(&result.action))
             .map_err(|e| ElementError::Other(format!("clipboard error: {:?}", e)))
     }
 }

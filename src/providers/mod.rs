@@ -32,13 +32,15 @@ pub trait SearchProvider: Send + Sync {
     fn search(&self, ctx: &SearchContext, query: &str) -> Vec<SearchResult>;
 
     /// Activate a result that was previously returned by search().
-    fn activate(
-        &self,
-        ctx: &SearchContext,
-        result: &SearchResult,
-    ) -> Result<(), ElementError>;
+    fn activate(&self, ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError>;
 
     /// Reload internal state (e.g. app list, clipboard entries).
     /// Called when the overlay opens or on explicit refresh.
     fn refresh(&self) {}
+
+    /// Monotonically increases after a background refresh publishes new data.
+    /// The UI uses this to re-run its current query without polling providers.
+    fn revision(&self) -> u64 {
+        0
+    }
 }

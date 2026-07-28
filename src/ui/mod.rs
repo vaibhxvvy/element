@@ -1,19 +1,24 @@
 use std::sync::atomic::Ordering;
 
-use iced::{
-    widget::{column, container, mouse_area, row, text, text_input, Column, TextInput},
-    Color, Element, Length, Subscription, Theme,
-};
 use iced::keyboard::{key, Key, Modifiers};
 use iced::time::Duration;
+use iced::{
+    widget::{column, container, mouse_area, row, scrollable, text, text_input, Column},
+    Color, Element, Length, Subscription, Theme,
+};
 
 use crate::app::SearchResult;
+use crate::debug_log;
 use crate::theme;
-use crate::{HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED};
+use crate::{EXIT_REQUESTED, HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED};
+
+const RESULTS_SCROLL_ID: &str = "results";
 
 #[derive(Debug, Clone)]
 pub enum Message {
     InputChanged(String),
+    ResultClicked(usize),
+    Submit,
     KeyPressed(Key, Modifiers),
     Tick,
 }
@@ -23,20 +28,72 @@ pub struct ElementApp {
     pub input: String,
     pub results: Vec<SearchResult>,
     pub selected_index: i32,
+    pub status: Option<String>,
+    pub search_revision: u64,
+}
+
+fn scroll_to_selected(selected_index: i32) -> iced::Task<Message> {
+    if selected_index < 0 {
+        return iced::Task::none();
+    }
+    let y = selected_index as f32 * theme::RESULT_HEIGHT;
+    scrollable::scroll_to(
+        scrollable::Id::new(RESULTS_SCROLL_ID),
+        scrollable::AbsoluteOffset { x: 0.0, y },
+    )
+}
+
+fn update_window_height(results: &[SearchResult], has_status: bool) {
+    let h = adaptive_height(results, has_status);
+    RESIZE_HEIGHT.store(h as u32, Ordering::Relaxed);
+    RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+fn search(app: &mut ElementApp, query: &str) -> iced::Task<Message> {
+    app.results = app.engine.search(query);
+    app.selected_index = if app.results.is_empty() { -1 } else { 0 };
+    app.search_revision = app.engine.revision();
+    update_window_height(&app.results, app.status.is_some());
+    scroll_to_selected(app.selected_index)
+}
+
+fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
+    let Some(result) = app.results.get(index).cloned() else {
+        return iced::Task::none();
+    };
+
+    match app.engine.activate(&result) {
+        Ok(()) if matches!(result.kind.as_str(), "calc" | "emoji" | "clipboard") => {
+            app.status = Some("Copied to clipboard".into());
+            update_window_height(&app.results, true);
+        }
+        Ok(()) => HIDE_REQUESTED.store(true, Ordering::SeqCst),
+        Err(error) => {
+            eprintln!("[element] failed to activate '{}': {error}", result.title);
+            app.status = Some(format!("Could not open {}", result.title));
+            update_window_height(&app.results, true);
+        }
+    }
+
+    iced::Task::none()
 }
 
 pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
     match message {
         Message::InputChanged(text) => {
             app.input = text.clone();
-            app.results = app.engine.search(&text);
-            app.selected_index = if text.is_empty() { -1 } else { 0 };
-            let h = adaptive_height(&app.results);
-            RESIZE_HEIGHT.store(h as u32, Ordering::Relaxed);
-            RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+            app.status = None;
+            return search(app, &text);
+        }
+        Message::ResultClicked(index) => return activate_result(app, index),
+        Message::Submit => {
+            if app.selected_index >= 0 {
+                return activate_result(app, app.selected_index as usize);
+            }
         }
         Message::KeyPressed(key, _mods) => match key {
             Key::Named(key::Named::Escape) => {
+                debug_log!("UI: Escape pressed – hiding launcher");
                 HIDE_REQUESTED.store(true, Ordering::SeqCst);
             }
             Key::Named(key::Named::ArrowUp) => {
@@ -48,6 +105,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                         app.selected_index - 1
                     };
                 }
+                return scroll_to_selected(app.selected_index);
             }
             Key::Named(key::Named::ArrowDown) => {
                 let count = app.results.len() as i32;
@@ -58,29 +116,26 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                         app.selected_index + 1
                     };
                 }
-            }
-            Key::Named(key::Named::Enter) => {
-                if app.selected_index >= 0 {
-                    let idx = app.selected_index as usize;
-                    if idx < app.results.len() {
-                        let item = app.results[idx].clone();
-                        let _ = app.engine.activate(&item);
-                    }
-                }
-                HIDE_REQUESTED.store(true, Ordering::SeqCst);
+                return scroll_to_selected(app.selected_index);
             }
             _ => {}
         },
         Message::Tick => {
+            if EXIT_REQUESTED.swap(false, Ordering::SeqCst) {
+                debug_log!("UI: EXIT_REQUESTED – exiting Iced application");
+                return iced::exit();
+            }
             if HOTKEY_TRIGGERED.swap(false, Ordering::SeqCst) {
+                debug_log!("UI: HOTKEY_TRIGGERED received – refreshing and focusing input");
                 app.engine.refresh_all();
                 app.input.clear();
-                app.results.clear();
-                app.selected_index = -1;
-                let h = adaptive_height(&[]);
-                RESIZE_HEIGHT.store(h as u32, Ordering::Relaxed);
-                RESIZE_REQUESTED.store(true, Ordering::SeqCst);
-                return text_input::focus("search");
+                app.status = None;
+                let search_task = search(app, "");
+                return iced::Task::batch(vec![text_input::focus("search"), search_task]);
+            }
+            if app.engine.revision() != app.search_revision {
+                let query = app.input.clone();
+                return search(app, &query);
             }
         }
     }
@@ -88,11 +143,18 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
 }
 
 pub fn view(app: &ElementApp) -> Element<'_, Message> {
-    let search = TextInput::new("Search apps, files, or type anything...", &app.input)
+    let search = text_input::TextInput::new("Search apps or type a web query...", &app.input)
         .id("search")
         .on_input(Message::InputChanged)
-        .padding([theme::INPUT_PADDING_TOP, theme::INPUT_PADDING_SIDES])
+        .on_submit(Message::Submit)
+        .padding([theme::INPUT_PADDING_VERTICAL, theme::INPUT_PADDING_SIDES])
         .style(element_input_style);
+
+    let header = row![search]
+        .spacing(0)
+        .padding([theme::HEADER_PADDING_VERTICAL, theme::CONTENT_PADDING_SIDES])
+        .align_y(iced::Alignment::Center)
+        .height(theme::SEARCH_BAR_HEIGHT);
 
     let mut list = Column::new().spacing(0);
 
@@ -102,13 +164,24 @@ pub fn view(app: &ElementApp) -> Element<'_, Message> {
     }
 
     let scroll = iced::widget::Scrollable::new(list)
+        .id(scrollable::Id::new(RESULTS_SCROLL_ID))
         .height(Length::Shrink)
-        .width(Length::Fill);
+        .width(Length::Fill)
+        .style(element_scrollable_style);
 
-    let content = Column::new()
-        .push(search)
-        .push(scroll)
-        .width(Length::Fill);
+    let mut content = Column::new().push(header);
+    if let Some(status) = &app.status {
+        content = content.push(
+            container(
+                text(status)
+                    .color(theme::TEXT_ERROR)
+                    .size(theme::SUBTITLE_SIZE),
+            )
+            .padding([theme::SPACING_SM, theme::CONTENT_PADDING_SIDES])
+            .height(theme::STATUS_HEIGHT),
+        );
+    }
+    let content = content.push(scroll).width(Length::Fill);
 
     container(content)
         .width(Length::Fill)
@@ -124,7 +197,7 @@ pub fn subscription(_app: &ElementApp) -> Subscription<Message> {
     ])
 }
 
-fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, Message> {
+fn result_row(index: usize, result: &SearchResult, selected: bool) -> Element<'_, Message> {
     let icon: Element<'_, Message> = if let Some((ref pixels, w, h)) = result.icon_rgba {
         let handle = iced::widget::image::Handle::from_rgba(w, h, pixels.clone());
         iced::widget::image(handle)
@@ -148,22 +221,21 @@ fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, M
 
     let indicator = if selected {
         container(text("").width(theme::INDICATOR_WIDTH))
-            .style(|_: &Theme| {
-                iced::widget::container::Style {
-                    background: Some(theme::ACCENT.into()),
-                    ..Default::default()
-                }
+            .style(|_: &Theme| iced::widget::container::Style {
+                background: Some(theme::ACCENT.into()),
+                ..Default::default()
             })
             .width(theme::INDICATOR_WIDTH)
     } else {
-        container(text("").width(theme::INDICATOR_WIDTH))
-            .width(theme::INDICATOR_WIDTH)
+        container(text("").width(theme::INDICATOR_WIDTH)).width(theme::INDICATOR_WIDTH)
     };
 
     let item = row![
         indicator,
         icon,
-        column![title, subtitle].spacing(theme::SPACING_SM).width(Length::Fill),
+        column![title, subtitle]
+            .spacing(theme::SPACING_SM)
+            .width(Length::Fill),
     ]
     .spacing(theme::SPACING_MD)
     .padding([0.0, theme::CONTENT_PADDING_SIDES])
@@ -182,24 +254,31 @@ fn result_row(_i: usize, result: &SearchResult, selected: bool) -> Element<'_, M
         })
         .width(Length::Fill);
 
-    mouse_area(item).into()
+    mouse_area(item)
+        .on_press(Message::ResultClicked(index))
+        .into()
 }
 
-fn adaptive_height(results: &[SearchResult]) -> f32 {
+fn adaptive_height(results: &[SearchResult], has_status: bool) -> f32 {
     let count = (results.len().min(theme::MAX_VISIBLE_RESULTS)) as f32;
-    let h = theme::SEARCH_BAR_HEIGHT + count * theme::RESULT_HEIGHT + theme::BOTTOM_PADDING;
-    h.min(theme::MAX_WINDOW_HEIGHT).max(theme::MIN_WINDOW_HEIGHT)
+    let status_height = if has_status {
+        theme::STATUS_HEIGHT
+    } else {
+        0.0
+    };
+    let h = theme::SEARCH_BAR_HEIGHT
+        + status_height
+        + count * theme::RESULT_HEIGHT
+        + theme::BOTTOM_PADDING;
+    h.clamp(theme::MIN_WINDOW_HEIGHT, theme::MAX_WINDOW_HEIGHT)
 }
 
-fn element_input_style(
-    _theme: &Theme,
-    _status: text_input::Status,
-) -> text_input::Style {
+fn element_input_style(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: theme::BG_INPUT.into(),
         border: iced::Border {
             radius: theme::BORDER_RADIUS.into(),
-            width: theme::BORDER_WIDTH,
+            width: 0.0,
             color: Color::TRANSPARENT,
         },
         icon: theme::TEXT_ICON,
@@ -209,9 +288,37 @@ fn element_input_style(
     }
 }
 
+fn element_scrollable_style(_theme: &Theme, _status: scrollable::Status) -> scrollable::Style {
+    scrollable::Style {
+        container: Default::default(),
+        vertical_rail: scrollable::Rail {
+            background: None,
+            border: Default::default(),
+            scroller: scrollable::Scroller {
+                color: Color::TRANSPARENT,
+                border: Default::default(),
+            },
+        },
+        horizontal_rail: scrollable::Rail {
+            background: None,
+            border: Default::default(),
+            scroller: scrollable::Scroller {
+                color: Color::TRANSPARENT,
+                border: Default::default(),
+            },
+        },
+        gap: None,
+    }
+}
+
 fn element_container_style(_theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(theme::BG_PRIMARY.into()),
+        border: iced::Border {
+            radius: theme::CONTAINER_RADIUS.into(),
+            width: theme::BORDER_WIDTH,
+            color: theme::BORDER,
+        },
         ..Default::default()
     }
 }
