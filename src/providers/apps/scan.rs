@@ -4,7 +4,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use super::icons::{cached_icon, icon_cache_dir, resolve_shortcut};
+use crate::providers::icon::icon_cache_dir;
+
+use super::icons::{cached_icon, resolve_shortcut};
 use super::{is_executable_path, InstalledApp};
 
 /// Walk the given directories (plus the system Start Menu folders) and index

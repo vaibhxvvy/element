@@ -62,17 +62,25 @@ src/
 ├── providers/
 │   ├── mod.rs        # SearchProvider trait + SearchContext<'a> { config, db }
 │   │                 # + SearchResult (provider contract lives with the providers).
+│   ├── fuzzy.rs      # Shared character-level fuzzy scorer (pure, unit-tested,
+│   │                 # used by apps and files).
+│   ├── icon.rs       # Shared icon pipeline: PNG cache + IShellItemImageFactory
+│   │                 # extraction for ANY shell path (exe, file, folder).
 │   ├── apps/         # Feature folder: app search.
 │   │   ├── mod.rs    #   AppsProvider: fuzzy match → frecency boost → icons, recommendations.
 │   │   ├── scan.rs   #   Background Start Menu scan (walkdir, .lnk → exe, dedup).
-│   │   ├── fuzzy.rs  #   Character-level fuzzy scorer (pure, unit-tested).
-│   │   └── icons.rs  #   Icon pipeline: .ico preference, IShellItemImageFactory, PNG cache.
+│   │   └── icons.rs  #   Shortcut layer: .lnk resolution + .ico preference,
+│   │                 #   delegates extraction to providers/icon.rs.
 │   ├── calculator/   # evalexpr. should_run: contains digits/math ops.
 │   │   └── mod.rs
 │   ├── emoji/        # emojis crate. should_run: starts with "emoji" or ":".
 │   │   └── mod.rs
 │   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".
 │   │   └── mod.rs
+│   ├── files/        # Raycast-style file search. should_run: "file"/"folder" prefixes.
+│   │   ├── mod.rs    #   FilesProvider: prefix parsing, fuzzy match on names,
+│   │   │             #   lazy icons via revision loop, explorer.exe activation.
+│   │   └── scan.rs   #   Background home-dir walk: exclusions, depth/entry caps.
 │   └── websearch/    # webbrowser + config.search_url. Always runs, score=-1 (bottom).
 │       └── mod.rs
 │
@@ -136,6 +144,7 @@ Use scores strategically:
 - Emoji: 500 - index (decaying, up to 20)
 - Apps: fuzzy_score × frecency_boost (0–~200)
 - Clipboard: 200
+- Files: 120 + fuzzy_score × 2 (+10 for folders); recommendations 190–200
 - Web search: -1 (always last)
 
 ## Key Design Decisions
@@ -218,6 +227,12 @@ from this. Do not duplicate it.
    executable's embedded icon through `IShellItemImageFactory` at 32×32.
 4. Cache decoded RGBA pixels as `~/.element/cache/icons/v2-<source-hash>.png`.
 
+The extraction + cache core is shared in `providers/icon.rs`
+(`cached_icon_for_path`), which works for **any** shell path — executables,
+plain files, and folders. The files provider uses it for lazy per-result icon
+fetching on a worker thread, publishing new icons through the revision counter
+so the UI re-renders without blocking on COM.
+
 ### Fuzzy scorer
 
 Character-level sequential match with bonuses:
@@ -241,15 +256,16 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 31 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, URL encoding)
+cargo test               # 40 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```
 
 ## Platform Code
 
-Window and tray FFI lives in `main.rs`. Shortcut resolution and icon extraction stay
-isolated in `providers/apps/icons.rs`, where COM is initialized only for the helper call.
+Window and tray FFI lives in `main.rs`. Shortcut resolution stays isolated in
+`providers/apps/icons.rs`; generic icon extraction (`IShellItemImageFactory`)
+lives in `providers/icon.rs`, where COM is initialized only for the helper call.
 
 Do not scatter `#[cfg(target_os = "windows")]` through providers or UI code.
 If a provider needs platform-specific logic, isolate it behind a helper.

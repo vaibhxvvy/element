@@ -56,6 +56,9 @@ impl Orchestrator {
         registry.add(Box::new(crate::providers::calculator::CalculatorProvider));
         registry.add(Box::new(crate::providers::emoji::EmojiProvider));
         registry.add(Box::new(crate::providers::clipboard::ClipboardProvider));
+        registry.add(Box::new(crate::providers::files::FilesProvider::new(
+            config.file_search_dirs.clone(),
+        )));
         registry.add(Box::new(crate::providers::websearch::WebSearchProvider));
 
         Self {

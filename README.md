@@ -35,7 +35,8 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 - **Calculator** — Type `2+2`, `(3*4)/2`, press Enter to copy result to clipboard.
 - **Emoji search** — Type `emoji` or `:` followed by a search term.
 - **Clipboard history** — Type `cbhist` or `clip` to browse recent clipboard entries from SQLite.
-- **Always-on-top overlay** — Borderless, centered, light theme.
+- **File & folder search** — Raycast-style: type `file <name>` or `folder <name>` to fuzzy-match files/folders from your home directory (or `file_search_dirs` in config) and open them with their default handler.
+- **Always-on-top overlay** — Borderless, centered, dark theme.
 
 ## Architecture
 
@@ -50,19 +51,23 @@ element/
 ├── src/
 │   ├── main.rs        # Entry point: RegisterHotKey + PeekMessageW loop,
 │   │                  #   hidden tray window, Iced bootstrap
-│   ├── app.rs         # SearchEngine: owns ProviderRegistry
+│   ├── orchestrator.rs # Orchestrator: handle(Request) → Outcome, owns providers
 │   ├── config.rs      # TOML config with JSON migration, shared data_dir()
 │   ├── database.rs    # SQLite — clipboard_entries + frecency tables
 │   ├── error.rs       # ElementError enum (thiserror)
 │   ├── registry.rs    # ProviderRegistry: catch_unwind isolation per provider
 │   ├── theme.rs       # Named color/spacing/radius tokens
+│   ├── hotkey/        # Global hotkey detection (RegisterHotKey → LL hook → fallbacks)
 │   ├── providers/
-│   │   ├── mod.rs        # SearchProvider trait + SearchContext
-│   │   ├── apps.rs       # Installed-app scan + fuzzy match + frecency + icons
-│   │   ├── calculator.rs # evalexpr expression evaluator
-│   │   ├── emoji.rs      # emojis crate search
-│   │   ├── clipboard.rs  # Clipboard history from SQLite
-│   │   └── websearch.rs  # Web search fallback (always at bottom)
+│   │   ├── mod.rs        # SearchProvider trait + SearchContext + SearchResult
+│   │   ├── fuzzy.rs      # Shared fuzzy scorer (apps + files)
+│   │   ├── icon.rs       # Shared icon pipeline for any shell path
+│   │   ├── apps/         # Installed-app scan + fuzzy match + frecency + icons
+│   │   ├── calculator/   # evalexpr expression evaluator
+│   │   ├── emoji/        # emojis crate search
+│   │   ├── clipboard/    # Clipboard history from SQLite
+│   │   ├── files/        # File/folder search ("file"/"folder" prefixes)
+│   │   └── websearch/    # Web search fallback (always at bottom)
 │   └── ui/
 │       └── mod.rs     # Iced views (uses theme.rs tokens)
 ├── brandkit/          # Brand assets
@@ -98,6 +103,7 @@ Search results are scored and sorted descending:
 | Emoji | 500 - index (decaying, up to 20) |
 | Apps | fuzzy_score × frecency_boost |
 | Clipboard | 200 |
+| Files | 120 + fuzzy × 2 (+10 folders); recs 190–200 |
 | Web search | -1 (always last) |
 
 The `ProviderRegistry` wraps each call in `catch_unwind` — a buggy provider never crashes the overlay.
@@ -109,6 +115,7 @@ query → ProviderRegistry
   ├─ Calculator  → should_run("2+2")?  yes → search
   ├─ Emoji       → should_run(":smile")? yes → search
   ├─ Clipboard   → should_run("cbhist")? yes → search
+  ├─ Files       → should_run("file x")? yes → fuzzy match home index
   ├─ Apps        → should_run(_) = true → fuzzy match + frecency
   └─ Web search  → should_run(_) = true → construct URL
        ↓
@@ -174,8 +181,8 @@ The window starts at `config.window_width × 56` px. On each keystroke, `adaptiv
 
 ### Icon pipeline
 
-1. Resolve the `.lnk` with `IShellLink` to find the target executable and optional icon location
-2. Prefer the shortcut's `.ico` file; otherwise extract the target executable's embedded 32×32 icon
+1. Resolve the `.lnk` with `IShellLink` to find the target executable and optional icon location (apps only)
+2. Prefer the shortcut's `.ico` file; otherwise extract a 32×32 icon for any shell path (exe, file, folder) via `IShellItemImageFactory` — shared in `src/providers/icon.rs`
 3. Cache decoded RGBA pixels at `cache/icons/v2-<source-hash>.png`
 
 ## Installation
@@ -218,6 +225,7 @@ window_height = 420.0
 debounce_delay_ms = 150
 search_url = "https://duckduckgo.com/search?q=%s"
 search_dirs = []
+file_search_dirs = []
 clipboard_max_entries = 100
 ```
 
@@ -229,6 +237,7 @@ clipboard_max_entries = 100
 | `debounce_delay_ms` | Reserved; search currently updates immediately |
 | `search_url` | URL template for web searches (`%s` = query) |
 | `search_dirs` | Additional directories to scan recursively for Start Menu-style `.lnk` applications |
+| `file_search_dirs` | Directories indexed for file/folder search; empty = user home folder |
 | `clipboard_max_entries` | Maximum clipboard history entries shown |
 
 ## Usage
@@ -238,6 +247,8 @@ clipboard_max_entries = 100
 | Toggle overlay | `Alt+Space` |
 | Select result | Click or Enter |
 | Navigate results | Arrow Up / Arrow Down |
+| Search files | Type `file <name>` (e.g. `file report`) |
+| Search folders | Type `folder <name>` |
 | Close overlay | `Escape` |
 | Quit app | Right-click tray icon → Exit |
 
@@ -246,7 +257,7 @@ clipboard_max_entries = 100
 ```bash
 cargo build              # debug build
 cargo build --release    # release build (slow with LTO)
-cargo test               # run all 27 tests
+cargo test               # run all 40 tests
 cargo fmt                # format code
 cargo clippy -- -D warnings  # lint (blocking on CI)
 ```

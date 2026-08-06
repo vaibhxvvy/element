@@ -6,7 +6,14 @@ pub mod apps;
 pub mod calculator;
 pub mod clipboard;
 pub mod emoji;
+pub mod files;
 pub mod websearch;
+
+/// Shared character-level fuzzy scorer (used by apps and files).
+mod fuzzy;
+/// Shared icon pipeline: on-disk PNG cache + `IShellItemImageFactory`
+/// extraction for any shell path (executables, files, folders).
+pub mod icon;
 
 /// One actionable search result, owned by the provider that produced it.
 ///

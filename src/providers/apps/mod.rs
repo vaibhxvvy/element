@@ -2,8 +2,11 @@
 //!
 //! The 975-line monolith was split by concern:
 //! - [`scan`] — Start Menu walking, `.lnk` resolution, dedup
-//! - [`fuzzy`] — character-level fuzzy scorer
-//! - [`icons`] — `.ico`/`IShellItemImageFactory` extraction + PNG cache
+//! - [`icons`] — shortcut icon source resolution (extraction lives in
+//!   [`crate::providers::icon`])
+//!
+//! The fuzzy scorer is shared with the files provider:
+//! [`crate::providers::fuzzy`].
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -12,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use crate::error::ElementError;
 use crate::providers::{SearchContext, SearchProvider, SearchResult};
 
-mod fuzzy;
+use super::fuzzy::fuzzy_score;
+
 mod icons;
 mod scan;
 
@@ -121,7 +125,7 @@ impl SearchProvider for AppsProvider {
 
         let mut results: Vec<SearchResult> = Vec::new();
         for app in apps.iter() {
-            if let Some(score) = fuzzy::fuzzy_score(&q, &app.name) {
+            if let Some(score) = fuzzy_score(&q, &app.name) {
                 let frecency = ctx
                     .db
                     .frecency_score(&app.executable_path)

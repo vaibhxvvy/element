@@ -1,6 +1,6 @@
 # Element — Living State Document
 
-> **Last updated:** 2026-08-06 (Phase 16 — module/domain split: Orchestrator, feature folders)
+> **Last updated:** 2026-08-06 (Phase 16 — module/domain split: Orchestrator, feature folders; file branch — shared fuzzy/icon modules + files provider
 > **Purpose:** Single source of truth for architecture decisions, project state, and next moves.
 
 ---
@@ -45,7 +45,7 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 | Clipboard DB | `rusqlite` (bundled) | `clipboard_entries` table in `~/.element/element.db`. |
 | Window centering | `SetWindowPos` post-show | Centered horizontally, ⅓ from top of primary monitor. |
 | Window effects | **DWM rounded corners** (DWMWCP_ROUND) | Solid #3c3c3c bg + small-radius corners avoids DWM acrylic fragility. |
-| Testing | `cargo test` (31 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, URL encoding. |
+| Testing | `cargo test` (40 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, files, URL encoding. |
 | Debug logging | File-based (`~/.element/debug.log`) | Timestamped output via `debug_log!` macro; enabled in debug builds or ELEMENT_DEBUG=1. |
 | Agent reference | `AGENTS.md` | Canonical doc for AI agents — architecture, provider system, design decisions. |
 | Living Doc | `ELEMENT_STATE.md` | This file. |
@@ -71,17 +71,21 @@ element/
 │   │   └── mod.rs
 │   ├── providers/
 │   │   ├── mod.rs        # SearchProvider trait + SearchContext + SearchResult
+│   │   ├── fuzzy.rs      # Shared fuzzy scorer (apps + files)
+│   │   ├── icon.rs       # Shared icon pipeline (any shell path) + PNG cache
 │   │   ├── apps/         # App search feature folder
 │   │   │   ├── mod.rs    #   AppsProvider: fuzzy match → frecency boost → recommendations
 │   │   │   ├── scan.rs   #   Start Menu scan (walkdir, .lnk → exe, dedup)
-│   │   │   ├── fuzzy.rs  #   Character-level fuzzy scorer
-│   │   │   └── icons.rs  #   Icon pipeline: .ico, IShellItemImageFactory, PNG cache
+│   │   │   └── icons.rs  #   Shortcut layer: .lnk resolution + .ico preference
 │   │   ├── calculator/   # evalexpr-based calculator
 │   │   │   └── mod.rs
 │   │   ├── emoji/        # Emoji search via emojis crate
 │   │   │   └── mod.rs
 │   │   ├── clipboard/    # Clipboard history from SQLite
 │   │   │   └── mod.rs
+│   │   ├── files/        # Raycast-style file/folder search ("file"/"folder" prefixes)
+│   │   │   ├── mod.rs    #   FilesProvider: prefix parsing, fuzzy names, lazy icons, explorer.exe
+│   │   │   └── scan.rs   #   Home-dir walk: exclusions, depth/entry caps
 │   │   └── websearch/    # Web search fallback (always at bottom)
 │   │       └── mod.rs
 │   └── ui/
@@ -164,10 +168,11 @@ Iced view:
 - **Frecency ranking**: SQLite frecency table; `count / (days_since + 1)` hybrid boost capped at 3×.
 - **Recommendations on open**: shows top frecency apps plus remaining apps alphabetically, with the first result selected.
 - **Direct app activation**: a result stores the resolved executable path and starts that `.exe` directly. Visible app names are never used as activation keys.
-- **Native icons**: COM `IShellLink` resolves the target and optional icon location. Valid `.ico` files are decoded first; otherwise the target executable icon is extracted at 32×32. Cached as PNG to `~/.element/cache/icons/v2-*.png`.
+- **Native icons**: shared pipeline in `providers/icon.rs` — `IShellItemImageFactory` extraction at 32×32 for any shell path (exe, file, folder), PNG-cached to `~/.element/cache/icons/v2-*.png`. Apps layer resolves `.lnk` → `.ico`/`.exe`; files provider fetches lazily on a worker thread.
 - **Adaptive window height**: formula `52 + min(results,10)×42 + 8`, capped at 500, min 56. WIRED to `RESIZE_HEIGHT` atomic.
 - **Config `window_width`**: wired to `WINDOW_WIDTH` atomic and initial window `Size`.
-- **Provider architecture**: `SearchProvider` trait, `SearchContext`, 5 providers (apps, calculator, emoji, clipboard, websearch), `ProviderRegistry` with `catch_unwind` isolation.
+- **Provider architecture**: `SearchProvider` trait, `SearchContext`, **6** providers (apps, calculator, emoji, clipboard, **files**, websearch), `ProviderRegistry` with `catch_unwind` isolation.
+- **File search**: `file <q>` / `folder <q>` prefixes fuzzy-match a background home-dir index; `explorer.exe` opens results with their default handler; `config.file_search_dirs` overrides the default home root.
 - **`elementError` enum**: thiserror-based covering Config, Database, Io, Icon, Provider, Other.
 - **`data_dir()` consolidated**: single source in `config.rs`, imported by `database.rs`.
 - **COM shortcut pipeline**: `.lnk` resolution uses the correct `IShellLink::GetPath` vtable slot and reads the shortcut icon location. The helper initializes COM for its own call and releases every COM interface before returning.
@@ -187,7 +192,8 @@ Iced view:
 - **opencode.md** updated with full session log.
 - **AGENTS.md** updated with new atomics, LL hook, single-instance, EnumWindows, safe FFI patterns.
 - **ELEMENT_STATE.md** updated with new tech stack entries, architecture, and risk mitigations.
-- **Module/domain split (Phase 16)**: `app.rs` → `orchestrator.rs` with `Request`/`Outcome` API; `hotkey.rs` → `hotkey/` folder; providers split into per-feature folders (`apps/{mod,scan,fuzzy,icons}`, `calculator/`, `emoji/`, `clipboard/`, `websearch/`); `SearchResult` moved into `providers/mod.rs`. UI routes all actions through `engine.handle(Request)`.
+- **Module/domain split (Phase 16)**: `app.rs` → `orchestrator.rs` with `Request`/`Outcome` API; `hotkey.rs` → `hotkey/` folder; providers split into per-feature folders (`apps/{mod,scan,icons}`, `calculator/`, `emoji/`, `clipboard/`, `files/`, `websearch/`); `SearchResult` moved into `providers/mod.rs`. UI routes all actions through `engine.handle(Request)`.
+- **File search (Phase 17)**: shared `providers/fuzzy.rs` (moved out of apps) and `providers/icon.rs` (generic path extraction) extracted; new `files/` provider with `file`/`folder` prefix gating, background home-dir index (`file_search_dirs` config, exclusions, depth/entry caps), lazy icons via revision loop, `explorer.exe` activation. 9 new tests (prefix parsing, folder mode, exclusions, ranking).
 
 ### Known issues
 

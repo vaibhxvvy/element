@@ -10,6 +10,9 @@ pub struct Config {
     pub debounce_delay_ms: u64,
     pub search_url: String,
     pub search_dirs: Vec<String>,
+    /// Directories indexed for file search (`file`/`folder` prefixes).
+    /// Empty = default to the user home folder.
+    pub file_search_dirs: Vec<String>,
     pub clipboard_max_entries: u32,
     /// Launch Element automatically when Windows starts.
     /// Defaults to true; missing in older config.toml files.
@@ -25,6 +28,7 @@ impl Default for Config {
             debounce_delay_ms: 150,
             search_url: "https://duckduckgo.com/search?q=%s".into(),
             search_dirs: vec![],
+            file_search_dirs: vec![],
             clipboard_max_entries: 100,
             autostart: true,
         }

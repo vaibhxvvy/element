@@ -1,5 +1,66 @@
 # Element — OpenCode Session Log
 
+## 2026-08-06 Session (2) — Phase 17: File & Folder Search (Raycast-style)
+
+### Goal
+Add a file/folder search mode like Raycast's File Search: type `file <query>` or
+`folder <query>` in the launcher to fuzzy-match files/folders from your home
+directory and open them. Extract the fuzzy scorer and icon pipeline into shared
+modules so both apps and files providers use them.
+
+### Shared modules extracted
+
+- `src/providers/apps/fuzzy.rs` → `src/providers/fuzzy.rs` (git mv) — used by
+  apps and files via `super::fuzzy::fuzzy_score`.
+- `src/providers/icon.rs` (new) — the generic icon core moved out of
+  `apps/icons.rs`: `icon_cache_dir`, `is_ico_path`, cache load/save, PNG cache
+  path, `shell_item_icon` (IShellItemImageFactory), and new
+  `cached_icon_for_path(path, cache_dir)` which works for **any** shell path —
+  executables, plain files, folders.
+- `src/providers/apps/icons.rs` slimmed to the shortcut layer: `ShortcutInfo`,
+  `resolve_shortcut` (.lnk COM), and `cached_icon(shortcut)` which resolves the
+  `.ico` preference then delegates to the shared pipeline.
+
+### FilesProvider (`src/providers/files/`)
+
+- **Prefix gating** (`should_run`): only `file`, `files`, `folder`, `folders`
+  prefixes (case-insensitive) — never shadows normal app search.
+- **Background index** (`scan.rs`): walks configured dirs or the user home,
+  skipping hidden entries and junk dirs (node_modules, target, .git, AppData,
+  $Recycle.Bin, …), capped at depth 8 and 25k entries, deduped by path.
+- **Scoring**: matches `120 + fuzzy × 2` (+10 for folders); recommendations
+  190–200 (folders first). Config `file_search_dirs` overrides the default home.
+- **Lazy icons**: `search()` attaches icons from an in-memory cache; a worker
+  thread extracts the top-12 missing icons via the shared pipeline and bumps
+  the provider revision so the UI re-runs the query and renders them — no COM
+  on the UI thread (same revision-loop the apps provider uses).
+- **Activation**: `explorer.exe <path>` — opens folders in Explorer, files with
+  their default handler, no console flash.
+- Registered in `Orchestrator::new()` with `config.file_search_dirs`.
+
+### Verification
+
+```bash
+cargo check               # clean
+cargo test                # 40 tests, all pass (9 new: prefix parsing, folder mode, exclusions)
+cargo clippy -- -D warnings  # clean
+cargo fmt                 # clean
+```
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/providers/fuzzy.rs` | Moved from apps/fuzzy.rs (shared) |
+| `src/providers/icon.rs` | New — shared icon pipeline for any path |
+| `src/providers/apps/icons.rs` | Slimmed to .lnk layer (delegates extraction) |
+| `src/providers/apps/{mod,scan}.rs` | Imports rewired to shared modules |
+| `src/providers/files/{mod,scan}.rs` | New — FilesProvider + home-dir scanner |
+| `src/config.rs` | New `file_search_dirs` field |
+| `src/orchestrator.rs` | Registers FilesProvider |
+| `AGENTS.md`, `ELEMENT_STATE.md` | New tree, 40 tests, files provider docs |
+| `opencode.md` | This session log |
+
 ## 2026-08-06 Session — Phase 16: Module/Domain Split + Orchestrator
 
 ### Goal
