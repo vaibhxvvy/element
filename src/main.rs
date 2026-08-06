@@ -230,6 +230,7 @@ extern "system" fn tray_wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: i
     const WM_RBUTTONUP: u32 = 0x0205;
     const ID_EXIT: usize = 1001;
     const ID_AUTOSTART: usize = 1002;
+    const ID_CONFIG: usize = 1003;
     const MF_CHECKED: u32 = 0x0008;
     const MF_SEPARATOR: u32 = 0x0800;
     const TPM_RIGHTBUTTON: u32 = 2;
@@ -248,8 +249,10 @@ extern "system" fn tray_wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: i
                 let autostart_text = [
                     82u16, 117, 110, 32, 97, 116, 32, 115, 116, 97, 114, 116, 117, 112, 0,
                 ];
+                let open_config_text = [79u16, 112, 101, 110, 32, 67, 111, 110, 102, 105, 103, 0];
                 let flags = if cfg.autostart { MF_CHECKED } else { 0 };
                 AppendMenuW(menu, flags, ID_AUTOSTART, autostart_text.as_ptr());
+                AppendMenuW(menu, 0, ID_CONFIG, open_config_text.as_ptr());
                 AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
                 let exit_text = [69u16, 120, 105, 116, 0];
                 AppendMenuW(menu, 0, ID_EXIT, exit_text.as_ptr());
@@ -271,6 +274,22 @@ extern "system" fn tray_wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: i
                 cfg.autostart = !cfg.autostart;
                 cfg.save();
                 set_autostart(cfg.autostart);
+            } else if id == ID_CONFIG {
+                debug_log!("tray open config");
+                let path = config::data_dir().join("config.toml");
+                let wide: Vec<u16> = path
+                    .to_string_lossy()
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                ShellExecuteW(
+                    0,
+                    std::ptr::null(),
+                    wide.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    1,
+                );
             }
             0
         }
@@ -420,6 +439,40 @@ extern "system" fn TrackPopupMenu(
         ) -> i32;
     }
     unsafe { TrackPopupMenu(hMenu, uFlags, x, y, nReserved, hWnd, prcRect) }
+}
+
+/// Open a file with its default handler via `ShellExecuteW`.
+/// MSDN: https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew
+#[cfg(target_os = "windows")]
+extern "system" fn ShellExecuteW(
+    hwnd: isize,
+    lpOperation: *const u16,
+    lpFile: *const u16,
+    lpParameters: *const u16,
+    lpDirectory: *const u16,
+    nShowCmd: i32,
+) -> isize {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            lpOperation: *const u16,
+            lpFile: *const u16,
+            lpParameters: *const u16,
+            lpDirectory: *const u16,
+            nShowCmd: i32,
+        ) -> isize;
+    }
+    unsafe {
+        ShellExecuteW(
+            hwnd,
+            lpOperation,
+            lpFile,
+            lpParameters,
+            lpDirectory,
+            nShowCmd,
+        )
+    }
 }
 
 #[cfg(target_os = "windows")]

@@ -7,6 +7,7 @@ pub mod calculator;
 pub mod clipboard;
 pub mod emoji;
 pub mod files;
+pub mod units;
 pub mod websearch;
 
 /// Shared character-level fuzzy scorer (used by apps and files).

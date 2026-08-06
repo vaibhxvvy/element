@@ -98,38 +98,52 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 return activate_result(app, app.selected_index as usize);
             }
         }
-        Message::KeyPressed(key, _mods) => match key {
-            Key::Named(key::Named::Escape) => {
-                // Single Esc hides (same as Alt+Space close) — does not quit.
-                debug_log!("UI: Escape – hiding launcher");
-                app.input.clear();
-                app.status = None;
-                HIDE_REQUESTED.store(true, Ordering::SeqCst);
-            }
-            Key::Named(key::Named::ArrowUp) => {
+        Message::KeyPressed(key, mods) => {
+            let ctrl = mods.control();
+            let move_selection = |app: &mut ElementApp, delta: i32| -> iced::Task<Message> {
                 let count = app.results.len() as i32;
                 if count > 0 {
-                    app.selected_index = if app.selected_index <= 0 {
+                    app.selected_index = if delta > 0 {
+                        if app.selected_index >= count - 1 {
+                            0
+                        } else {
+                            app.selected_index + 1
+                        }
+                    } else if app.selected_index <= 0 {
                         count - 1
                     } else {
                         app.selected_index - 1
                     };
                 }
-                return scroll_to_selected(app.selected_index);
-            }
-            Key::Named(key::Named::ArrowDown) => {
-                let count = app.results.len() as i32;
-                if count > 0 {
-                    app.selected_index = if app.selected_index >= count - 1 {
-                        0
-                    } else {
-                        app.selected_index + 1
-                    };
+                scroll_to_selected(app.selected_index)
+            };
+            match key {
+                Key::Named(key::Named::Escape) => {
+                    // Single Esc hides (same as Alt+Space close) — does not quit.
+                    debug_log!("UI: Escape – hiding launcher");
+                    app.input.clear();
+                    app.status = None;
+                    HIDE_REQUESTED.store(true, Ordering::SeqCst);
                 }
-                return scroll_to_selected(app.selected_index);
+                Key::Named(key::Named::ArrowUp) => return move_selection(app, -1),
+                Key::Named(key::Named::ArrowDown) => return move_selection(app, 1),
+                Key::Character(character) if ctrl && (character == "p") => {
+                    return move_selection(app, -1);
+                }
+                Key::Character(character) if ctrl && (character == "n") => {
+                    return move_selection(app, 1);
+                }
+                Key::Character(character) if ctrl && !mods.shift() => {
+                    if let Ok(number) = character.parse::<usize>() {
+                        if (1..=9).contains(&number) && number <= app.results.len() {
+                            app.selected_index = number as i32 - 1;
+                            return scroll_to_selected(app.selected_index);
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        },
+        }
         Message::Tick => {
             if EXIT_REQUESTED.swap(false, Ordering::SeqCst) {
                 debug_log!("UI: EXIT_REQUESTED – exiting Iced application");

@@ -74,6 +74,8 @@ src/
 │   │                 #   delegates extraction to providers/icon.rs.
 │   ├── calculator/   # evalexpr. should_run: contains digits/math ops.
 │   │   └── mod.rs
+│   ├── units/        # "5 km in miles" / "100 c in f" — length, mass, volume,
+│   │   └── mod.rs    #   speed, data, time, temperature. Multi-separator parse.
 │   ├── emoji/        # emojis crate. should_run: starts with "emoji" or ":".
 │   │   └── mod.rs
 │   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".
@@ -151,6 +153,7 @@ Results from all providers are merged and sorted by `score` descending (then tit
 alphabetically). Priority is **not** currently used in sort, only as future tiebreaker.
 Use scores strategically:
 - Calculator: 1000 (always on top when matched)
+- Units: 900
 - Emoji: 500 - index (decaying, up to 20)
 - Apps: fuzzy_score × frecency_boost (0–~200)
 - Clipboard: 200

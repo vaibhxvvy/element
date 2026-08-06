@@ -60,6 +60,7 @@ impl Orchestrator {
             config.file_search_dirs.clone(),
         )));
         registry.add(Box::new(crate::providers::websearch::WebSearchProvider));
+        registry.add(Box::new(crate::providers::units::UnitsProvider));
 
         Self {
             config,

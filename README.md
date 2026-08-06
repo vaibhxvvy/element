@@ -20,7 +20,7 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 ## Features
 
 - **Global hotkey** — Toggle the overlay with `Alt+Space`. Uses `RegisterHotKey` + `PeekMessageW` — zero CPU when idle. **Escape** closes the window.
-- **System tray** — Icon in the notification area. Left-click toggles overlay; right-click shows Exit menu.
+- **System tray** — Icon in the notification area. Left-click toggles overlay; right-click menu: Run at startup, Open config, Exit.
 - **App launcher** — Resolves Start Menu shortcuts to their target `.exe` and launches that executable directly. Prefers shortcut-provided `.ico` files, then falls back to the executable's embedded icon; decoded icons are cached as PNG.
 - **Scored fuzzy matching** — Word boundary, camelCase, consecutive, and early-match bonuses. Type `pwsh` → matches "PowerShell", `wn` → "Windows Notepad", `vsc` → "Visual Studio Code".
 - **Frecency ranking** — Frequently and recently launched apps rise to the top. Uses a SQLite frecency table (`count / days since last use`).
@@ -32,6 +32,8 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 - **Emoji search** — Type `emoji` or `:` followed by a search term.
 - **Clipboard history** — Type `cbhist` or `clip` to browse recent clipboard entries from SQLite.
 - **File & folder search** — Raycast-style: type `file <name>` or `folder <name>` to fuzzy-match files/folders in your curated user folders (Desktop, Documents, Downloads, ... — or `file_search_dirs` in config) and open them with their default handler.
+- **Unit conversion** — Type `5 km in miles`, `100 c in f`, `2 liters to gallons`; Enter copies the result. Length, mass, volume, speed, data, time, temperature.
+- **Keyboard navigation** — Arrow keys, `Ctrl+P`/`Ctrl+N` (vim motions), `Ctrl+1..9` to jump straight to a result.
 - **Always-on-top overlay** — Borderless, centered, dark theme.
 
 ## Architecture
