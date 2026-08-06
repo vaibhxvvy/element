@@ -8,7 +8,7 @@
 use std::path::Path;
 
 /// Maximum directory depth walked (0 = root only).
-const MAX_DEPTH: usize = 10;
+const MAX_DEPTH: usize = 14;
 /// Hard cap on indexed entries.
 const MAX_ENTRIES: usize = 50_000;
 
