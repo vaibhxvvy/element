@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::ElementError;
@@ -121,18 +121,23 @@ pub struct FilesProvider {
     icons: IconCache,
     search_dirs: Vec<String>,
     roots: Arc<Mutex<Vec<String>>>,
+    /// Index scan limits, live-updatable from the settings panel.
+    max_depth: Arc<AtomicUsize>,
+    max_entries: Arc<AtomicUsize>,
     refresh_in_progress: Arc<AtomicBool>,
     icon_worker_busy: Arc<AtomicBool>,
     revision: Arc<AtomicU64>,
 }
 
 impl FilesProvider {
-    pub fn new(search_dirs: Vec<String>) -> Self {
+    pub fn new(search_dirs: Vec<String>, max_depth: usize, max_entries: usize) -> Self {
         let provider = Self {
             entries: Arc::new(Mutex::new(Vec::new())),
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs,
             roots: Arc::new(Mutex::new(Vec::new())),
+            max_depth: Arc::new(AtomicUsize::new(max_depth)),
+            max_entries: Arc::new(AtomicUsize::new(max_entries)),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -395,14 +400,18 @@ impl SearchProvider for FilesProvider {
         let entries = Arc::clone(&self.entries);
         let roots = Arc::clone(&self.roots);
         let search_dirs = self.search_dirs.clone();
+        let max_depth = self.max_depth.load(Ordering::SeqCst);
+        let max_entries = self.max_entries.load(Ordering::SeqCst);
         let refresh_in_progress = Arc::clone(&self.refresh_in_progress);
         let revision = Arc::clone(&self.revision);
         let worker = std::thread::Builder::new()
             .name("element-file-index".into())
             .spawn(move || {
                 let resolved_roots = scan::resolve_roots(&search_dirs);
-                let indexed =
-                    std::panic::catch_unwind(|| scan::scan_files(&search_dirs)).unwrap_or_default();
+                let indexed = std::panic::catch_unwind(|| {
+                    scan::scan_files(&search_dirs, max_depth, max_entries)
+                })
+                .unwrap_or_default();
                 let mut replaced = false;
                 if let Ok(mut guard) = entries.lock() {
                     *guard = indexed;
@@ -425,6 +434,14 @@ impl SearchProvider for FilesProvider {
 
     fn revision(&self) -> u64 {
         self.revision.load(Ordering::SeqCst)
+    }
+
+    fn set_file_limits(&self, depth: usize, entries: usize) {
+        self.max_depth.store(depth, Ordering::SeqCst);
+        self.max_entries.store(entries, Ordering::SeqCst);
+        // Re-index with the new limits in the background; the revision bump
+        // re-renders the current query when the scan publishes.
+        self.refresh();
     }
 }
 
@@ -533,6 +550,8 @@ mod tests {
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
             roots: Arc::new(Mutex::new(Vec::new())),
+            max_depth: Arc::new(AtomicUsize::new(14)),
+            max_entries: Arc::new(AtomicUsize::new(50_000)),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -574,6 +593,8 @@ mod tests {
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
             roots: Arc::new(Mutex::new(Vec::new())),
+            max_depth: Arc::new(AtomicUsize::new(14)),
+            max_entries: Arc::new(AtomicUsize::new(50_000)),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -610,6 +631,8 @@ mod tests {
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
             roots: Arc::new(Mutex::new(Vec::new())),
+            max_depth: Arc::new(AtomicUsize::new(14)),
+            max_entries: Arc::new(AtomicUsize::new(50_000)),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -636,6 +659,8 @@ mod tests {
                 r"C:\Users\me\Desktop".into(),
                 r"C:\Users\me\Documents".into(),
             ])),
+            max_depth: Arc::new(AtomicUsize::new(14)),
+            max_entries: Arc::new(AtomicUsize::new(50_000)),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -673,6 +698,8 @@ mod tests {
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
             roots: Arc::new(Mutex::new(Vec::new())),
+            max_depth: Arc::new(AtomicUsize::new(14)),
+            max_entries: Arc::new(AtomicUsize::new(50_000)),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -706,6 +733,8 @@ mod tests {
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
             roots: Arc::new(Mutex::new(Vec::new())),
+            max_depth: Arc::new(AtomicUsize::new(14)),
+            max_entries: Arc::new(AtomicUsize::new(50_000)),
             refresh_in_progress: Arc::new(AtomicBool::new(true)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -736,6 +765,8 @@ mod tests {
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
             roots: Arc::new(Mutex::new(Vec::new())),
+            max_depth: Arc::new(AtomicUsize::new(14)),
+            max_entries: Arc::new(AtomicUsize::new(50_000)),
             refresh_in_progress: Arc::new(AtomicBool::new(true)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),

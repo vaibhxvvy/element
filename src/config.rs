@@ -19,6 +19,10 @@ pub struct Config {
     pub autostart: bool,
     /// Accent color as `#rrggbb` hex, used for selection highlights.
     pub accent: String,
+    /// Maximum directory depth walked by the file index.
+    pub file_index_depth: usize,
+    /// Hard cap on indexed file entries.
+    pub file_index_entries: usize,
 }
 
 impl Default for Config {
@@ -34,6 +38,8 @@ impl Default for Config {
             clipboard_max_entries: 100,
             autostart: true,
             accent: "#569cd4".into(),
+            file_index_depth: 14,
+            file_index_entries: 50_000,
         }
     }
 }

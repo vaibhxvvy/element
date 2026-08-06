@@ -1100,6 +1100,8 @@ pub fn main() -> iced::Result {
                         window_width: startup_config.window_width,
                         accent: startup_config.accent.clone(),
                         autostart: startup_config.autostart,
+                        file_index_depth: startup_config.file_index_depth,
+                        file_index_entries: startup_config.file_index_entries,
                     },
                 },
                 iced::Task::none(),

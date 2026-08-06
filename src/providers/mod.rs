@@ -63,6 +63,9 @@ pub trait SearchProvider: Send + Sync {
     /// Called when the overlay opens or on explicit refresh.
     fn refresh(&self) {}
 
+    /// Update the file-index scan limits (files provider); default no-op.
+    fn set_file_limits(&self, _depth: usize, _entries: usize) {}
+
     /// Monotonically increases after a background refresh publishes new data.
     /// The UI uses this to re-run its current query without polling providers.
     fn revision(&self) -> u64 {

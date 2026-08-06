@@ -3,14 +3,10 @@
 //!
 //! Exclusions guard against indexing junk: hidden entries, common build/
 //! dependency folders, phone-backup/media dumps, caches, and Windows AppData.
-//! Depth and count caps keep the index bounded.
+//! Depth and count caps come from the config (`file_index_depth`,
+//! `file_index_entries`) so users can widen the scan from the settings panel.
 
 use std::path::Path;
-
-/// Maximum directory depth walked (0 = root only).
-const MAX_DEPTH: usize = 14;
-/// Hard cap on indexed entries.
-const MAX_ENTRIES: usize = 50_000;
 
 /// Directory names (case-insensitive) never indexed.
 const EXCLUDED_DIRS: &[&str] = &[
@@ -91,16 +87,23 @@ fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
 }
 
-/// Walk `dir` at relative `depth` (root = 0), collecting entries into `out`.
-fn walk(dir: &Path, depth: usize, out: &mut Vec<super::FileEntry>) {
-    if depth > MAX_DEPTH || out.len() >= MAX_ENTRIES {
+/// Walk `dir` at relative `depth` (root = 0), collecting entries into `out`,
+/// bounded by `max_depth` levels and `max_entries` total entries.
+fn walk(
+    dir: &Path,
+    depth: usize,
+    max_depth: usize,
+    max_entries: usize,
+    out: &mut Vec<super::FileEntry>,
+) {
+    if depth > max_depth || out.len() >= max_entries {
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in rd.flatten() {
-        if out.len() >= MAX_ENTRIES {
+        if out.len() >= max_entries {
             return;
         }
         let path = entry.path();
@@ -115,7 +118,7 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<super::FileEntry>) {
             is_dir,
         });
         if is_dir {
-            walk(&path, depth + 1, out);
+            walk(&path, depth + 1, max_depth, max_entries, out);
         }
     }
 }
@@ -158,25 +161,29 @@ pub(crate) fn resolve_roots(root_dirs: &[String]) -> Vec<String> {
 
 /// Index the configured directories (or the home folder when none are
 /// configured), deduped by path, capped, sorted by name.
-pub(crate) fn scan_files(root_dirs: &[String]) -> Vec<super::FileEntry> {
+pub(crate) fn scan_files(
+    root_dirs: &[String],
+    max_depth: usize,
+    max_entries: usize,
+) -> Vec<super::FileEntry> {
     let roots = resolve_roots(root_dirs);
 
     let mut by_path: std::collections::HashMap<String, super::FileEntry> =
         std::collections::HashMap::new();
     for root in roots {
         let mut batch: Vec<super::FileEntry> = Vec::new();
-        walk(Path::new(&root), 0, &mut batch);
+        walk(Path::new(&root), 0, max_depth, max_entries, &mut batch);
         for entry in batch {
             by_path.insert(entry.path.clone(), entry);
         }
-        if by_path.len() >= MAX_ENTRIES {
+        if by_path.len() >= max_entries {
             break;
         }
     }
 
     let mut entries: Vec<super::FileEntry> = by_path.into_values().collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
-    entries.truncate(MAX_ENTRIES);
+    entries.truncate(max_entries);
     entries
 }
 

@@ -27,6 +27,8 @@ pub enum Request {
     Activate(SearchResult),
     /// Ask every provider to reload its index (app scan, clipboard, ...).
     Refresh,
+    /// Change the file-index scan limits (depth, entry cap) and re-index.
+    UpdateFileIndex { depth: usize, entries: usize },
 }
 
 /// The outcome of performing a [`Request`].
@@ -58,6 +60,8 @@ impl Orchestrator {
         registry.add(Box::new(crate::providers::clipboard::ClipboardProvider));
         registry.add(Box::new(crate::providers::files::FilesProvider::new(
             config.file_search_dirs.clone(),
+            config.file_index_depth,
+            config.file_index_entries,
         )));
         registry.add(Box::new(crate::providers::websearch::WebSearchProvider));
         registry.add(Box::new(crate::providers::units::UnitsProvider));
@@ -78,6 +82,10 @@ impl Orchestrator {
             Request::Activate(result) => Outcome::Activated(self.activate(&result)),
             Request::Refresh => {
                 self.refresh_all();
+                Outcome::Refreshed(self.revision())
+            }
+            Request::UpdateFileIndex { depth, entries } => {
+                self.registry.update_file_limits(depth, entries);
                 Outcome::Refreshed(self.revision())
             }
         }

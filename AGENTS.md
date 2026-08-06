@@ -95,8 +95,11 @@ src/
 │   │   │             #   `file` shows Desktop/Documents/... instantly); an
 │   │   │             #   "Indexing your files…" hint fills the gap while the
 │   │   │             #   first background scan is still running.
-│   │   └── scan.rs   #   Background walk of curated user folders (Desktop/
-│   │                 #   Documents/...): junk exclusions, depth/entry caps.
+│   │   │             #   Scan limits live from settings (depth 4–32, entries
+│   │   │             #   10k–200k): set_file_limits() + Request::UpdateFileIndex.
+│   │   └── scan.rs    #   Background walk of curated user folders (Desktop/
+│   │                 #   Documents/...): junk exclusions, depth/entry caps
+│   │                 #   from config (file_index_depth / file_index_entries).
 │   └── websearch/    # webbrowser + config.search_url. Always runs, score=-1 (bottom).
 │       └── mod.rs
 │

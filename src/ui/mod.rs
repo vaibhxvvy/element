@@ -20,9 +20,14 @@ use crate::{
 const RESULTS_SCROLL_ID: &str = "results";
 const SETTINGS_URL_ID: &str = "settings-url";
 
-const SETTINGS_WINDOW_HEIGHT: f32 = 372.0;
+const SETTINGS_WINDOW_HEIGHT: f32 = 460.0;
 const WIDTH_MIN: f32 = 400.0;
 const WIDTH_MAX: f32 = 900.0;
+const DEPTH_MIN: f32 = 4.0;
+const DEPTH_MAX: f32 = 32.0;
+const ENTRIES_MIN: f32 = 10_000.0;
+const ENTRIES_MAX: f32 = 200_000.0;
+const ENTRIES_STEP: f32 = 10_000.0;
 const ACCENT_SWATCHES: [&str; 6] = [
     "#569cd4", "#e8540c", "#7cb86e", "#b56ec2", "#e06c75", "#4ec9b0",
 ];
@@ -40,6 +45,21 @@ pub struct SettingsDraft {
     pub window_width: f32,
     pub accent: String,
     pub autostart: bool,
+    pub file_index_depth: usize,
+    pub file_index_entries: usize,
+}
+
+/// Build a settings draft from a config — used when opening the panel and
+/// when resetting everything to factory defaults.
+fn draft_from_config(cfg: &Config) -> SettingsDraft {
+    SettingsDraft {
+        search_url: cfg.search_url.clone(),
+        window_width: cfg.window_width,
+        accent: cfg.accent.clone(),
+        autostart: cfg.autostart,
+        file_index_depth: cfg.file_index_depth,
+        file_index_entries: cfg.file_index_entries,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +74,9 @@ pub enum Message {
     WidthChanged(f32),
     AccentChanged(String),
     AutostartChanged(bool),
+    FileDepthChanged(f32),
+    FileEntriesChanged(f32),
+    ResetSettings,
 }
 
 pub struct ElementApp {
@@ -128,14 +151,18 @@ fn open_settings(app: &mut ElementApp) {
     debug_log!("UI: opening settings panel");
     app.mode = Mode::Settings;
     app.status = None;
-    app.settings = SettingsDraft {
-        search_url: app.engine.config.search_url.clone(),
-        window_width: app.engine.config.window_width,
-        accent: app.engine.config.accent.clone(),
-        autostart: app.engine.config.autostart,
-    };
+    app.settings = draft_from_config(&app.engine.config);
     RESIZE_HEIGHT.store(SETTINGS_WINDOW_HEIGHT as u32, Ordering::Relaxed);
     RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Push the draft's file-index limits to the orchestrator so the files
+/// provider re-indexes live (no restart needed).
+fn apply_file_limits(app: &ElementApp) {
+    app.engine.handle(Request::UpdateFileIndex {
+        depth: app.settings.file_index_depth,
+        entries: app.settings.file_index_entries,
+    });
 }
 
 /// Persist the settings draft to `~/.element/config.toml`.
@@ -145,6 +172,8 @@ fn save_settings(app: &ElementApp) {
     cfg.window_width = app.settings.window_width;
     cfg.accent = app.settings.accent.clone();
     cfg.autostart = app.settings.autostart;
+    cfg.file_index_depth = app.settings.file_index_depth;
+    cfg.file_index_entries = app.settings.file_index_entries;
     cfg.save();
     debug_log!("UI: settings saved");
 }
@@ -192,6 +221,27 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
             crate::set_autostart(enabled);
             return iced::Task::none();
         }
+        Message::FileDepthChanged(depth) => {
+            app.settings.file_index_depth = depth as usize;
+            apply_file_limits(app);
+            return iced::Task::none();
+        }
+        Message::FileEntriesChanged(entries) => {
+            app.settings.file_index_entries = entries as usize;
+            apply_file_limits(app);
+            return iced::Task::none();
+        }
+        Message::ResetSettings => {
+            app.settings = draft_from_config(&Config::default());
+            let accent = app.settings.accent.clone();
+            let width = app.settings.window_width;
+            apply_accent(app, &accent);
+            apply_width(app, width);
+            crate::set_autostart(app.settings.autostart);
+            apply_file_limits(app);
+            debug_log!("UI: settings reset to defaults");
+            return iced::Task::none();
+        }
         Message::InputChanged(text) => {
             app.input = text.clone();
             app.status = None;
@@ -207,6 +257,12 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
             if app.mode == Mode::Settings {
                 if key == Key::Named(key::Named::Escape) {
                     debug_log!("UI: Escape in settings – back to search");
+                    return leave_settings(app);
+                }
+                // Backspace with an empty URL field goes back to search;
+                // while the field has text it stays an edit key.
+                if key == Key::Named(key::Named::Backspace) && app.settings.search_url.is_empty() {
+                    debug_log!("UI: Backspace in settings – back to search");
                     return leave_settings(app);
                 }
                 return iced::Task::none();
@@ -499,6 +555,42 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
         .text_size(theme::TITLE_SIZE);
     let autostart_row = settings_row("Startup", autostart.into());
 
+    let depth_value = text(format!("{} levels", app.settings.file_index_depth))
+        .color(theme::TEXT_PRIMARY)
+        .size(theme::SUBTITLE_SIZE)
+        .width(Length::FillPortion(1));
+    let depth = row![
+        slider(
+            DEPTH_MIN..=DEPTH_MAX,
+            app.settings.file_index_depth as f32,
+            Message::FileDepthChanged
+        )
+        .step(1.0_f32)
+        .width(Length::FillPortion(3)),
+        depth_value,
+    ]
+    .spacing(theme::SPACING_MD)
+    .align_y(iced::Alignment::Center);
+    let depth_row = settings_row("File index depth", depth.into());
+
+    let entries_value = text(format!("{}", app.settings.file_index_entries))
+        .color(theme::TEXT_PRIMARY)
+        .size(theme::SUBTITLE_SIZE)
+        .width(Length::FillPortion(1));
+    let entries = row![
+        slider(
+            ENTRIES_MIN..=ENTRIES_MAX,
+            app.settings.file_index_entries as f32,
+            Message::FileEntriesChanged
+        )
+        .step(ENTRIES_STEP)
+        .width(Length::FillPortion(3)),
+        entries_value,
+    ]
+    .spacing(theme::SPACING_MD)
+    .align_y(iced::Alignment::Center);
+    let entries_row = settings_row("File index entries", entries.into());
+
     let hotkey = text(format!(
         "{}  ·  edit in config.toml",
         app.engine.config.hotkey
@@ -511,14 +603,25 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
         .color(theme::TEXT_MUTED)
         .size(theme::SUBTITLE_SIZE);
 
+    let reset = button(text("Reset to defaults"))
+        .on_press(Message::ResetSettings)
+        .style(accent_button_style)
+        .padding([4.0, 10.0]);
+
+    let footer = row![container(hint).width(Length::Fill), reset]
+        .padding([8.0, theme::CONTENT_PADDING_SIDES])
+        .align_y(iced::Alignment::Center);
+
     let list = column![
         header,
         width_row,
         url_row,
         accent_row,
         autostart_row,
+        depth_row,
+        entries_row,
         hotkey_row,
-        container(hint).padding([8.0, theme::CONTENT_PADDING_SIDES]),
+        footer,
     ]
     .spacing(theme::SPACING_SM)
     .width(Length::Fill);

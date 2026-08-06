@@ -88,6 +88,20 @@ impl ProviderRegistry {
         }
     }
 
+    /// Push new file-index scan limits to the files provider (other providers
+    /// ignore it), then let it re-index in the background.
+    pub fn update_file_limits(&self, depth: usize, entries: usize) {
+        for provider in &self.providers {
+            let id = provider.id();
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                provider.set_file_limits(depth, entries)
+            }));
+            if result.is_err() {
+                eprintln!("[element] provider '{id}' panicked during set_file_limits");
+            }
+        }
+    }
+
     /// Return the latest published data revision across all providers.
     pub fn revision(&self) -> u64 {
         self.providers
