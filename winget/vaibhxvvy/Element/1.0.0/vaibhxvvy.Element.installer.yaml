@@ -11,6 +11,6 @@ ReleaseDate: 2026-08-06
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/vaibhxvvy/element/releases/download/v1.0.0/element-1.0.0-setup.exe
-    InstallerSha256: E5F35F95140106CA26150A60610FD8ADC9B93EEB3F35EE9D5DCCE18A43AB25DE
+    InstallerSha256: bc40ff4ac7772325aecddbe4678dbc6e15682fb6668d935ab0a7aada222a6065
 ManifestType: installer
 ManifestVersion: 1.12.0
