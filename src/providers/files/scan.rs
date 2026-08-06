@@ -8,9 +8,9 @@
 use std::path::Path;
 
 /// Maximum directory depth walked (0 = root only).
-const MAX_DEPTH: usize = 8;
+const MAX_DEPTH: usize = 10;
 /// Hard cap on indexed entries.
-const MAX_ENTRIES: usize = 25_000;
+const MAX_ENTRIES: usize = 50_000;
 
 /// Directory names (case-insensitive) never indexed.
 const EXCLUDED_DIRS: &[&str] = &[
