@@ -80,7 +80,8 @@ src/
 │   ├── files/        # Raycast-style file search. should_run: "file"/"folder" prefixes.
 │   │   ├── mod.rs    #   FilesProvider: prefix parsing, fuzzy match on names,
 │   │   │             #   lazy icons via revision loop, explorer.exe activation.
-│   │   └── scan.rs   #   Background home-dir walk: exclusions, depth/entry caps.
+│   │   └── scan.rs   #   Background walk of curated user folders (Desktop/
+│   │                 #   Documents/...): junk exclusions, depth/entry caps.
 │   └── websearch/    # webbrowser + config.search_url. Always runs, score=-1 (bottom).
 │       └── mod.rs
 │
@@ -256,7 +257,7 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 40 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
+cargo test               # 44 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```

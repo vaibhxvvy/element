@@ -25,9 +25,11 @@ modules so both apps and files providers use them.
 
 - **Prefix gating** (`should_run`): only `file`, `files`, `folder`, `folders`
   prefixes (case-insensitive) — never shadows normal app search.
-- **Background index** (`scan.rs`): walks configured dirs or the user home,
-  skipping hidden entries and junk dirs (node_modules, target, .git, AppData,
-  $Recycle.Bin, …), capped at depth 8 and 25k entries, deduped by path.
+- **Background index** (`scan.rs`): walks configured dirs or curated user
+  folders (Desktop/Documents/Downloads/...), skipping hidden entries, junk
+  dirs (node_modules, target, .git, AppData, site-packages, DCIM/100PINT
+  phone dumps, version dirs, caches/media/backup/libraries/firefox by
+  substring), capped at depth 8 and 25k entries, deduped by path.
 - **Scoring**: matches `120 + fuzzy × 2` (+10 for folders); recommendations
   190–200 (folders first). Config `file_search_dirs` overrides the default home.
 - **Lazy icons**: `search()` attaches icons from an in-memory cache; a worker
@@ -38,11 +40,31 @@ modules so both apps and files providers use them.
   their default handler, no console flash.
 - Registered in `Orchestrator::new()` with `config.file_search_dirs`.
 
+### Follow-up fix (same session — empty result list bug)
+
+User reported "can't see files or folders". Diagnosis via diagnostic tests
+showed the provider worked but the index was flooded: the home dir contains
+phone-backup trees (`Desktop\pvt\...` with `DCIM/100PINT`, WhatsApp/Telegram
+media dumps, `miniconda3`, `curseforge`, PowerShell module version dirs) that
+swallowed the 25k entry cap with junk before real files were indexed, and the
+bare `file` query surfaced that junk.
+
+Fixes:
+- Default roots = **curated user folders** (Desktop, Documents, Downloads,
+  Pictures, Music, Videos) instead of the whole home dir; falls back to home.
+- Junk exclusions hardened: version dirs (`0.1.0`/`v2.0`), Android dump dirs
+  (`100PINT`, `100MEDIA`, ...), and substring matches for `cache`, `backup`,
+  `media`, `libraries`, `site-packages`, `dcim`, `firefox`.
+- Bare `file`/`folder` query now recommends the scan roots (Desktop,
+  Documents, ...) as openable folder results instead of first-alphabetical
+  junk — verified: 6 root recs, `file report` → 30 real matches.
+- Clean index on the real machine: 6,140 entries (was 25,000 junk-capped).
+
 ### Verification
 
 ```bash
 cargo check               # clean
-cargo test                # 40 tests, all pass (9 new: prefix parsing, folder mode, exclusions)
+cargo test                # 44 tests, all pass (13 new: prefix parsing, folder mode, exclusions)
 cargo clippy -- -D warnings  # clean
 cargo fmt                 # clean
 ```

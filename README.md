@@ -35,7 +35,7 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 - **Calculator** — Type `2+2`, `(3*4)/2`, press Enter to copy result to clipboard.
 - **Emoji search** — Type `emoji` or `:` followed by a search term.
 - **Clipboard history** — Type `cbhist` or `clip` to browse recent clipboard entries from SQLite.
-- **File & folder search** — Raycast-style: type `file <name>` or `folder <name>` to fuzzy-match files/folders from your home directory (or `file_search_dirs` in config) and open them with their default handler.
+- **File & folder search** — Raycast-style: type `file <name>` or `folder <name>` to fuzzy-match files/folders in your curated user folders (Desktop, Documents, Downloads, ... — or `file_search_dirs` in config) and open them with their default handler.
 - **Always-on-top overlay** — Borderless, centered, dark theme.
 
 ## Architecture
@@ -237,7 +237,7 @@ clipboard_max_entries = 100
 | `debounce_delay_ms` | Reserved; search currently updates immediately |
 | `search_url` | URL template for web searches (`%s` = query) |
 | `search_dirs` | Additional directories to scan recursively for Start Menu-style `.lnk` applications |
-| `file_search_dirs` | Directories indexed for file/folder search; empty = user home folder |
+| `file_search_dirs` | Directories indexed for file/folder search; empty = curated user folders (Desktop, Documents, Downloads, Pictures, Music, Videos) |
 | `clipboard_max_entries` | Maximum clipboard history entries shown |
 
 ## Usage

@@ -45,7 +45,7 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 | Clipboard DB | `rusqlite` (bundled) | `clipboard_entries` table in `~/.element/element.db`. |
 | Window centering | `SetWindowPos` post-show | Centered horizontally, ⅓ from top of primary monitor. |
 | Window effects | **DWM rounded corners** (DWMWCP_ROUND) | Solid #3c3c3c bg + small-radius corners avoids DWM acrylic fragility. |
-| Testing | `cargo test` (40 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, files, URL encoding. |
+| Testing | `cargo test` (44 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, files, URL encoding. |
 | Debug logging | File-based (`~/.element/debug.log`) | Timestamped output via `debug_log!` macro; enabled in debug builds or ELEMENT_DEBUG=1. |
 | Agent reference | `AGENTS.md` | Canonical doc for AI agents — architecture, provider system, design decisions. |
 | Living Doc | `ELEMENT_STATE.md` | This file. |
@@ -85,7 +85,7 @@ element/
 │   │   │   └── mod.rs
 │   │   ├── files/        # Raycast-style file/folder search ("file"/"folder" prefixes)
 │   │   │   ├── mod.rs    #   FilesProvider: prefix parsing, fuzzy names, lazy icons, explorer.exe
-│   │   │   └── scan.rs   #   Home-dir walk: exclusions, depth/entry caps
+│   │   │   └── scan.rs   #   Walk of curated user folders: exclusions, caps
 │   │   └── websearch/    # Web search fallback (always at bottom)
 │   │       └── mod.rs
 │   └── ui/
@@ -193,7 +193,7 @@ Iced view:
 - **AGENTS.md** updated with new atomics, LL hook, single-instance, EnumWindows, safe FFI patterns.
 - **ELEMENT_STATE.md** updated with new tech stack entries, architecture, and risk mitigations.
 - **Module/domain split (Phase 16)**: `app.rs` → `orchestrator.rs` with `Request`/`Outcome` API; `hotkey.rs` → `hotkey/` folder; providers split into per-feature folders (`apps/{mod,scan,icons}`, `calculator/`, `emoji/`, `clipboard/`, `files/`, `websearch/`); `SearchResult` moved into `providers/mod.rs`. UI routes all actions through `engine.handle(Request)`.
-- **File search (Phase 17)**: shared `providers/fuzzy.rs` (moved out of apps) and `providers/icon.rs` (generic path extraction) extracted; new `files/` provider with `file`/`folder` prefix gating, background home-dir index (`file_search_dirs` config, exclusions, depth/entry caps), lazy icons via revision loop, `explorer.exe` activation. 9 new tests (prefix parsing, folder mode, exclusions, ranking).
+- **File search (Phase 17)**: shared `providers/fuzzy.rs` (moved out of apps) and `providers/icon.rs` (generic path extraction) extracted; new `files/` provider with `file`/`folder` prefix gating, background index of curated user folders (`file_search_dirs` config, junk exclusions incl. version dirs/Android dumps, depth/entry caps), lazy icons via revision loop, `explorer.exe` activation, root-folder recommendations on empty query. 13 new tests (prefix parsing, folder mode, exclusions, ranking, root recs).
 
 ### Known issues
 

@@ -71,6 +71,7 @@ pub struct FilesProvider {
     /// Path → cached icon (or `None` when extraction failed).
     icons: IconCache,
     search_dirs: Vec<String>,
+    roots: Arc<Mutex<Vec<String>>>,
     refresh_in_progress: Arc<AtomicBool>,
     icon_worker_busy: Arc<AtomicBool>,
     revision: Arc<AtomicU64>,
@@ -82,6 +83,7 @@ impl FilesProvider {
             entries: Arc::new(Mutex::new(Vec::new())),
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs,
+            roots: Arc::new(Mutex::new(Vec::new())),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -174,22 +176,36 @@ impl FilesProvider {
     }
 
     fn recommendations(&self, mode: SearchMode) -> Vec<SearchResult> {
-        let Ok(entries) = self.entries.lock() else {
-            return Vec::new();
+        // Empty query: surface the scan roots (Desktop, Documents, ...) so the
+        // user always sees meaningful folders, never arbitrary junk.
+        let roots = match self.roots.lock() {
+            Ok(roots) => roots.clone(),
+            Err(_) => return Vec::new(),
         };
         let mut results: Vec<SearchResult> = Vec::new();
-        // Folders first, then files — both alphabetically.
-        for is_dir in [true, false] {
-            if mode == SearchMode::FoldersOnly && !is_dir {
-                break;
+        for root in roots {
+            if mode == SearchMode::FoldersOnly {
+                // All roots are folders; nothing to filter out.
             }
-            for entry in entries
-                .iter()
-                .filter(|e| e.is_dir == is_dir)
-                .take(MAX_RESULTS - results.len())
-            {
-                results.push(Self::result_for(entry, if is_dir { 200.0 } else { 190.0 }));
+            let path = Path::new(&root);
+            let name = path
+                .file_name()
+                .or_else(|| path.parent().and_then(|p| p.file_name()))
+                .and_then(|s| s.to_str())
+                .unwrap_or(&root)
+                .to_string();
+            if name.is_empty() {
+                continue;
             }
+            results.push(SearchResult {
+                title: name,
+                subtitle: root.clone(),
+                kind: "folder".into(),
+                provider_id: "files".into(),
+                action: root.clone(),
+                icon_rgba: None,
+                score: 210.0,
+            });
         }
         results
     }
@@ -271,16 +287,26 @@ impl SearchProvider for FilesProvider {
         }
 
         let entries = Arc::clone(&self.entries);
+        let roots = Arc::clone(&self.roots);
         let search_dirs = self.search_dirs.clone();
         let refresh_in_progress = Arc::clone(&self.refresh_in_progress);
         let revision = Arc::clone(&self.revision);
         let worker = std::thread::Builder::new()
             .name("element-file-index".into())
             .spawn(move || {
+                let resolved_roots = scan::resolve_roots(&search_dirs);
                 let indexed =
                     std::panic::catch_unwind(|| scan::scan_files(&search_dirs)).unwrap_or_default();
+                let mut replaced = false;
                 if let Ok(mut guard) = entries.lock() {
                     *guard = indexed;
+                    replaced = true;
+                }
+                if let Ok(mut guard) = roots.lock() {
+                    *guard = resolved_roots;
+                    replaced = true;
+                }
+                if replaced {
                     revision.fetch_add(1, Ordering::SeqCst);
                 }
                 refresh_in_progress.store(false, Ordering::SeqCst);
@@ -361,6 +387,7 @@ mod tests {
             ])),
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
+            roots: Arc::new(Mutex::new(Vec::new())),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -396,6 +423,7 @@ mod tests {
             ])),
             icons: Arc::new(Mutex::new(HashMap::new())),
             search_dirs: Vec::new(),
+            roots: Arc::new(Mutex::new(Vec::new())),
             refresh_in_progress: Arc::new(AtomicBool::new(false)),
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
@@ -410,5 +438,34 @@ mod tests {
         let results = provider.search(&ctx, "folder notes");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, "folder");
+    }
+
+    #[test]
+    fn empty_query_recommends_roots() {
+        let provider = FilesProvider {
+            entries: Arc::new(Mutex::new(Vec::new())),
+            icons: Arc::new(Mutex::new(HashMap::new())),
+            search_dirs: Vec::new(),
+            roots: Arc::new(Mutex::new(vec![
+                r"C:\Users\me\Desktop".into(),
+                r"C:\Users\me\Documents".into(),
+            ])),
+            refresh_in_progress: Arc::new(AtomicBool::new(false)),
+            icon_worker_busy: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+        };
+        let config = crate::config::Config::default();
+        let db = crate::database::Database::new_in_memory();
+        let ctx = SearchContext {
+            config: &config,
+            db: &db,
+        };
+
+        let results = provider.search(&ctx, "file");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Desktop");
+        assert_eq!(results[0].kind, "folder");
+        assert_eq!(results[0].action, r"C:\Users\me\Desktop");
+        assert!(results.iter().all(|r| r.kind == "folder"));
     }
 }
