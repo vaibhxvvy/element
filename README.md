@@ -1,9 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="brandkit/wordmark/wordmark-horizontal-light.png">
-    <source media="(prefers-color-scheme: light)" srcset="brandkit/wordmark/wordmark-horizontal-dark.png">
-    <img src="brandkit/wordmark/wordmark-horizontal-dark.png" alt="Element" width="400">
-  </picture>
+  <img src="brandkit/wordmark/wordmark-horizontal-dark.png" alt="Element" width="400">
 </p>
 
 <p align="center">
