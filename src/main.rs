@@ -792,7 +792,7 @@ const REG_SZ: u32 = 1;
 const ERROR_SUCCESS: i32 = 0;
 
 #[cfg(target_os = "windows")]
-fn set_autostart(enabled: bool) {
+pub(crate) fn set_autostart(enabled: bool) {
     let run_key = "Software\\Microsoft\\Windows\\CurrentVersion\\Run\0"
         .encode_utf16()
         .collect::<Vec<_>>();
@@ -848,6 +848,7 @@ pub fn main() -> iced::Result {
     WINDOW_WIDTH.store(config.window_width as u32, Ordering::Relaxed);
     let init_win_size = iced::Size::new(config.window_width, 56.0);
     debug_log!("config loaded, window_width={}", config.window_width);
+    theme::apply_config_accent(&config.accent);
 
     #[cfg(target_os = "windows")]
     set_autostart(config.autostart);
@@ -1083,6 +1084,7 @@ pub fn main() -> iced::Result {
         .run_with(move || {
             let db = Arc::new(Database::new());
             let engine = Orchestrator::new(config, db);
+            let startup_config = engine.config.clone();
             debug_log!("Iced application started – Orchestrator initialized");
             (
                 ui::ElementApp {
@@ -1092,6 +1094,13 @@ pub fn main() -> iced::Result {
                     selected_index: -1,
                     status: None,
                     search_revision: 0,
+                    mode: ui::Mode::Search,
+                    settings: ui::SettingsDraft {
+                        search_url: startup_config.search_url.clone(),
+                        window_width: startup_config.window_width,
+                        accent: startup_config.accent.clone(),
+                        autostart: startup_config.autostart,
+                    },
                 },
                 iced::Task::none(),
             )

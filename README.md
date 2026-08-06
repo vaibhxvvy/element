@@ -34,6 +34,7 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 - **File & folder search** — Raycast-style: type `file <name>` or `folder <name>` to fuzzy-match files/folders in your curated user folders (Desktop, Documents, Downloads, ... — or `file_search_dirs` in config) and open them with their default handler.
 - **Unit conversion** — Type `5 km in miles`, `100 c in f`, `2 liters to gallons`; Enter copies the result. Length, mass, volume, speed, data, time, temperature.
 - **Keyboard navigation** — Arrow keys, `Ctrl+P`/`Ctrl+N` (vim motions), `Ctrl+1..9` to jump straight to a result.
+- **Settings panel** — Type `settings` and press Enter: window width slider, search engine URL, accent color (6 swatches), run-at-startup toggle. Changes apply live and save to `config.toml`.
 - **Always-on-top overlay** — Borderless, centered, dark theme.
 
 ## Architecture

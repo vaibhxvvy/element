@@ -1,8 +1,48 @@
+use std::sync::Mutex;
+
 use iced::Color;
 
 // Central place for all colour, spacing, radius, and typography tokens.
 // Design: dark launcher with DWM acrylic blur (60px), 50% opacity #3c3c3c
 // background, #4d4d4d full-opacity 2px inset border, rounded corners.
+
+/// The default accent when no config override is set.
+const ACCENT_DEFAULT: Color = Color::from_rgb(86.0 / 255.0, 156.0 / 255.0, 214.0 / 255.0);
+
+static ACCENT: Mutex<Color> = Mutex::new(ACCENT_DEFAULT);
+
+/// Current accent color — configurable via the settings panel.
+pub fn accent() -> Color {
+    *ACCENT.lock().expect("accent mutex poisoned")
+}
+
+/// Override the accent color (settings panel).
+pub fn set_accent(color: Color) {
+    *ACCENT.lock().expect("accent mutex poisoned") = color;
+}
+
+/// Parse `"#rrggbb"` into a [`Color`]. Returns `None` for malformed input.
+pub fn parse_hex_color(s: &str) -> Option<Color> {
+    let hex = s.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::from_rgb(
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+    ))
+}
+
+/// Apply the configured accent from config (`accent = "#rrggbb"`).
+pub fn apply_config_accent(configured: &str) {
+    if let Some(color) = parse_hex_color(configured) {
+        set_accent(color);
+    }
+}
 
 // --- Backgrounds ---
 /// Main container background.
@@ -20,7 +60,6 @@ pub const TEXT_ICON: Color = TEXT_MUTED;
 pub const TEXT_ERROR: Color = Color::from_rgb(1.0, 100.0 / 255.0, 100.0 / 255.0);
 
 // --- Accent ---
-pub const ACCENT: Color = Color::from_rgb(86.0 / 255.0, 156.0 / 255.0, 214.0 / 255.0);
 /// #4d4d4d full-opacity border
 pub const BORDER: Color = Color::from_rgb(77.0 / 255.0, 77.0 / 255.0, 77.0 / 255.0);
 

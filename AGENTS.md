@@ -76,6 +76,8 @@ src/
 │   │   └── mod.rs
 │   ├── units/        # "5 km in miles" / "100 c in f" — length, mass, volume,
 │   │   └── mod.rs    #   speed, data, time, temperature. Multi-separator parse.
+│   ├── settings/     # "settings" → opens the in-launcher settings panel
+│   │   └── mod.rs    #   (UI intercepts kind=="settings"; width/URL/accent/autostart).
 │   ├── emoji/        # emojis crate. should_run: starts with "emoji" or ":".
 │   │   └── mod.rs
 │   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".

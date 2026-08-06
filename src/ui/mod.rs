@@ -2,18 +2,45 @@ use std::sync::atomic::Ordering;
 
 use iced::keyboard::{key, Key, Modifiers};
 use iced::time::Duration;
-use iced::{
-    widget::{column, container, mouse_area, row, scrollable, text, text_input, Column},
-    Color, Element, Length, Subscription, Theme,
+use iced::widget::{
+    button, checkbox, column, container, mouse_area, row, scrollable, slider, text, text_input,
+    Column,
 };
+use iced::{Color, Element, Length, Subscription, Theme};
 
+use crate::config::Config;
 use crate::debug_log;
 use crate::orchestrator::{Orchestrator, Outcome, Request};
 use crate::providers::SearchResult;
 use crate::theme;
-use crate::{EXIT_REQUESTED, HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED};
+use crate::{
+    EXIT_REQUESTED, HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH,
+};
 
 const RESULTS_SCROLL_ID: &str = "results";
+const SETTINGS_URL_ID: &str = "settings-url";
+
+const SETTINGS_WINDOW_HEIGHT: f32 = 372.0;
+const WIDTH_MIN: f32 = 400.0;
+const WIDTH_MAX: f32 = 900.0;
+const ACCENT_SWATCHES: [&str; 6] = [
+    "#569cd4", "#e8540c", "#7cb86e", "#b56ec2", "#e06c75", "#4ec9b0",
+];
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Mode {
+    Search,
+    Settings,
+}
+
+/// Editable settings state, initialized from the startup config and saved on exit.
+#[derive(Debug, Clone)]
+pub struct SettingsDraft {
+    pub search_url: String,
+    pub window_width: f32,
+    pub accent: String,
+    pub autostart: bool,
+}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -22,6 +49,11 @@ pub enum Message {
     Submit,
     KeyPressed(Key, Modifiers),
     Tick,
+    SettingsBack,
+    SearchUrlChanged(String),
+    WidthChanged(f32),
+    AccentChanged(String),
+    AutostartChanged(bool),
 }
 
 pub struct ElementApp {
@@ -31,6 +63,8 @@ pub struct ElementApp {
     pub selected_index: i32,
     pub status: Option<String>,
     pub search_revision: u64,
+    pub mode: Mode,
+    pub settings: SettingsDraft,
 }
 
 fn scroll_to_selected(selected_index: i32) -> iced::Task<Message> {
@@ -66,6 +100,11 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
         return iced::Task::none();
     };
 
+    if result.kind == "settings" {
+        open_settings(app);
+        return iced::Task::none();
+    }
+
     match app.engine.handle(Request::Activate(result.clone())) {
         Outcome::Activated(Ok(()))
             if matches!(result.kind.as_str(), "calc" | "emoji" | "clipboard") =>
@@ -85,8 +124,74 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
     iced::Task::none()
 }
 
+fn open_settings(app: &mut ElementApp) {
+    debug_log!("UI: opening settings panel");
+    app.mode = Mode::Settings;
+    app.status = None;
+    app.settings = SettingsDraft {
+        search_url: app.engine.config.search_url.clone(),
+        window_width: app.engine.config.window_width,
+        accent: app.engine.config.accent.clone(),
+        autostart: app.engine.config.autostart,
+    };
+    RESIZE_HEIGHT.store(SETTINGS_WINDOW_HEIGHT as u32, Ordering::Relaxed);
+    RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Persist the settings draft to `~/.element/config.toml`.
+fn save_settings(app: &ElementApp) {
+    let mut cfg = Config::load();
+    cfg.search_url = app.settings.search_url.trim().to_string();
+    cfg.window_width = app.settings.window_width;
+    cfg.accent = app.settings.accent.clone();
+    cfg.autostart = app.settings.autostart;
+    cfg.save();
+    debug_log!("UI: settings saved");
+}
+
+fn leave_settings(app: &mut ElementApp) -> iced::Task<Message> {
+    save_settings(app);
+    app.mode = Mode::Search;
+    app.input.clear();
+    app.status = None;
+    let search_task = search(app, "");
+    iced::Task::batch(vec![text_input::focus("search"), search_task])
+}
+
+fn apply_width(app: &mut ElementApp, width: f32) {
+    app.settings.window_width = width;
+    WINDOW_WIDTH.store(width as u32, Ordering::Relaxed);
+    RESIZE_HEIGHT.store(SETTINGS_WINDOW_HEIGHT as u32, Ordering::Relaxed);
+    RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+fn apply_accent(app: &mut ElementApp, hex: &str) {
+    app.settings.accent = hex.to_string();
+    if let Some(color) = theme::parse_hex_color(hex) {
+        theme::set_accent(color);
+    }
+}
+
 pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
     match message {
+        Message::SettingsBack => return leave_settings(app),
+        Message::SearchUrlChanged(url) => {
+            app.settings.search_url = url;
+            return iced::Task::none();
+        }
+        Message::WidthChanged(width) => {
+            apply_width(app, width);
+            return iced::Task::none();
+        }
+        Message::AccentChanged(hex) => {
+            apply_accent(app, &hex);
+            return iced::Task::none();
+        }
+        Message::AutostartChanged(enabled) => {
+            app.settings.autostart = enabled;
+            crate::set_autostart(enabled);
+            return iced::Task::none();
+        }
         Message::InputChanged(text) => {
             app.input = text.clone();
             app.status = None;
@@ -94,11 +199,18 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
         }
         Message::ResultClicked(index) => return activate_result(app, index),
         Message::Submit => {
-            if app.selected_index >= 0 {
+            if app.mode == Mode::Search && app.selected_index >= 0 {
                 return activate_result(app, app.selected_index as usize);
             }
         }
         Message::KeyPressed(key, mods) => {
+            if app.mode == Mode::Settings {
+                if key == Key::Named(key::Named::Escape) {
+                    debug_log!("UI: Escape in settings – back to search");
+                    return leave_settings(app);
+                }
+                return iced::Task::none();
+            }
             let ctrl = mods.control();
             let move_selection = |app: &mut ElementApp, delta: i32| -> iced::Task<Message> {
                 let count = app.results.len() as i32;
@@ -169,6 +281,10 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
 }
 
 pub fn view(app: &ElementApp) -> Element<'_, Message> {
+    if app.mode == Mode::Settings {
+        return settings_view(app);
+    }
+
     let search = text_input::TextInput::new("Search apps or type a web query...", &app.input)
         .id("search")
         .on_input(Message::InputChanged)
@@ -248,7 +364,7 @@ fn result_row(index: usize, result: &SearchResult, selected: bool) -> Element<'_
     let indicator = if selected {
         container(text("").width(theme::INDICATOR_WIDTH))
             .style(|_: &Theme| iced::widget::container::Style {
-                background: Some(theme::ACCENT.into()),
+                background: Some(theme::accent().into()),
                 ..Default::default()
             })
             .width(theme::INDICATOR_WIDTH)
@@ -285,6 +401,135 @@ fn result_row(index: usize, result: &SearchResult, selected: bool) -> Element<'_
         .into()
 }
 
+fn settings_row<'a>(title: &'a str, content: Element<'a, Message>) -> Element<'a, Message> {
+    row![
+        text(title)
+            .color(theme::TEXT_MUTED)
+            .size(theme::TITLE_SIZE)
+            .width(Length::FillPortion(2)),
+        container(content).width(Length::FillPortion(3)),
+    ]
+    .spacing(theme::SPACING_MD)
+    .padding([6.0, theme::CONTENT_PADDING_SIDES])
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
+fn settings_view(app: &ElementApp) -> Element<'_, Message> {
+    let title = text("Settings")
+        .color(theme::TEXT_PRIMARY)
+        .size(theme::TITLE_SIZE)
+        .width(Length::Fill);
+
+    let back = button(text("← Back"))
+        .on_press(Message::SettingsBack)
+        .style(accent_button_style)
+        .padding([4.0, 10.0]);
+
+    let header = row![title, back]
+        .padding([8.0, theme::CONTENT_PADDING_SIDES])
+        .align_y(iced::Alignment::Center);
+
+    let width_value = text(format!("{} px", app.settings.window_width.round() as u32))
+        .color(theme::TEXT_PRIMARY)
+        .size(theme::SUBTITLE_SIZE)
+        .width(Length::FillPortion(1));
+    let width = row![
+        slider(
+            WIDTH_MIN..=WIDTH_MAX,
+            app.settings.window_width,
+            Message::WidthChanged
+        )
+        .width(Length::FillPortion(3)),
+        width_value,
+    ]
+    .spacing(theme::SPACING_MD)
+    .align_y(iced::Alignment::Center);
+    let width_row = settings_row("Window width", width.into());
+
+    let url_input = text_input::TextInput::new(
+        "https://duckduckgo.com/search?q=%s",
+        &app.settings.search_url,
+    )
+    .id(SETTINGS_URL_ID)
+    .on_input(Message::SearchUrlChanged)
+    .padding([6.0, 8.0])
+    .style(element_input_style);
+    let url_row = settings_row("Search URL", url_input.into());
+
+    let swatches = row(ACCENT_SWATCHES
+        .iter()
+        .map(|hex| {
+            let color = theme::parse_hex_color(hex).unwrap_or(theme::accent());
+            let selected = app.settings.accent.eq_ignore_ascii_case(hex);
+            let swatch = container(text(""))
+                .style(move |_: &Theme| iced::widget::container::Style {
+                    background: Some(color.into()),
+                    border: iced::Border {
+                        radius: 4.0.into(),
+                        width: if selected { 2.0 } else { 0.0 },
+                        color: if selected {
+                            theme::TEXT_PRIMARY
+                        } else {
+                            Color::TRANSPARENT
+                        },
+                    },
+                    ..Default::default()
+                })
+                .width(22.0)
+                .height(22.0);
+            button(swatch)
+                .on_press(Message::AccentChanged((*hex).to_string()))
+                .padding(0)
+                .style(|_: &Theme, _: button::Status| iced::widget::button::Style {
+                    background: None,
+                    border: Default::default(),
+                    text_color: Color::TRANSPARENT,
+                    ..Default::default()
+                })
+                .into()
+        })
+        .collect::<Vec<Element<'static, Message>>>())
+    .spacing(theme::SPACING_MD)
+    .align_y(iced::Alignment::Center);
+    let accent_row = settings_row("Accent", swatches.into());
+
+    let autostart = checkbox("Run Element at startup", app.settings.autostart)
+        .on_toggle(Message::AutostartChanged)
+        .text_size(theme::TITLE_SIZE);
+    let autostart_row = settings_row("Startup", autostart.into());
+
+    let hotkey = text(format!(
+        "{}  ·  edit in config.toml",
+        app.engine.config.hotkey
+    ))
+    .color(theme::TEXT_PRIMARY)
+    .size(theme::TITLE_SIZE);
+    let hotkey_row = settings_row("Hotkey", hotkey.into());
+
+    let hint = text("Changes apply live and are saved automatically.")
+        .color(theme::TEXT_MUTED)
+        .size(theme::SUBTITLE_SIZE);
+
+    let list = column![
+        header,
+        width_row,
+        url_row,
+        accent_row,
+        autostart_row,
+        hotkey_row,
+        container(hint).padding([8.0, theme::CONTENT_PADDING_SIDES]),
+    ]
+    .spacing(theme::SPACING_SM)
+    .width(Length::Fill);
+
+    container(list)
+        .width(Length::Fill)
+        .height(Length::Shrink)
+        .style(element_container_style)
+        .into()
+}
+
 fn adaptive_height(results: &[SearchResult], has_status: bool) -> f32 {
     let count = (results.len().min(theme::MAX_VISIBLE_RESULTS)) as f32;
     let status_height = if has_status {
@@ -310,7 +555,7 @@ fn element_input_style(_theme: &Theme, _status: text_input::Status) -> text_inpu
         icon: theme::TEXT_ICON,
         placeholder: theme::TEXT_PLACEHOLDER,
         value: theme::TEXT_PRIMARY,
-        selection: theme::ACCENT,
+        selection: theme::accent(),
     }
 }
 
@@ -345,6 +590,23 @@ fn element_container_style(_theme: &Theme) -> iced::widget::container::Style {
             width: theme::BORDER_WIDTH,
             color: theme::BORDER,
         },
+        ..Default::default()
+    }
+}
+
+fn accent_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => theme::BG_SELECTED,
+        _ => theme::BG_INPUT,
+    };
+    button::Style {
+        background: Some(bg.into()),
+        border: iced::Border {
+            radius: theme::BORDER_RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        text_color: theme::TEXT_PRIMARY,
         ..Default::default()
     }
 }

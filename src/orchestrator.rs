@@ -61,6 +61,7 @@ impl Orchestrator {
         )));
         registry.add(Box::new(crate::providers::websearch::WebSearchProvider));
         registry.add(Box::new(crate::providers::units::UnitsProvider));
+        registry.add(Box::new(crate::providers::settings::SettingsProvider));
 
         Self {
             config,

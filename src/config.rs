@@ -17,6 +17,8 @@ pub struct Config {
     /// Launch Element automatically when Windows starts.
     /// Defaults to true; missing in older config.toml files.
     pub autostart: bool,
+    /// Accent color as `#rrggbb` hex, used for selection highlights.
+    pub accent: String,
 }
 
 impl Default for Config {
@@ -31,6 +33,7 @@ impl Default for Config {
             file_search_dirs: vec![],
             clipboard_max_entries: 100,
             autostart: true,
+            accent: "#569cd4".into(),
         }
     }
 }
