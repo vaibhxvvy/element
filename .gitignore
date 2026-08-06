@@ -34,3 +34,4 @@ Desktop.ini
 
 # Vendored winget-pkgs fork clone (maintained outside this repo)
 /winget-pkgs/
+brandkit.zip
