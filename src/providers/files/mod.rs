@@ -88,6 +88,13 @@ impl FilesProvider {
             icon_worker_busy: Arc::new(AtomicBool::new(false)),
             revision: Arc::new(AtomicU64::new(0)),
         };
+        // Publish the scan roots immediately (cheap is_dir checks) so bare
+        // `file`/`folder` queries show Desktop/Documents/... right away,
+        // before the background walk completes.
+        let initial_roots = scan::resolve_roots(&provider.search_dirs);
+        if let Ok(mut guard) = provider.roots.lock() {
+            *guard = initial_roots;
+        }
         provider.refresh();
         provider
     }
@@ -139,7 +146,10 @@ impl FilesProvider {
                 return;
             };
             for result in results.iter().take(ICON_LOOKAHEAD) {
-                if result.icon_rgba.is_none() && !icons.contains_key(&result.action) {
+                if result.icon_rgba.is_none()
+                    && !result.action.is_empty()
+                    && !icons.contains_key(&result.action)
+                {
                     missing.push(result.action.clone());
                 }
             }
@@ -209,6 +219,32 @@ impl FilesProvider {
         }
         results
     }
+
+    /// True while the very first background index is still running and no
+    /// entries have been published yet — the window where `file <query>`
+    /// would otherwise show nothing.
+    fn first_scan_in_progress(&self) -> bool {
+        self.refresh_in_progress.load(Ordering::SeqCst)
+            && self
+                .entries
+                .lock()
+                .map(|entries| entries.is_empty())
+                .unwrap_or(false)
+    }
+
+    /// Placeholder result shown while the first scan runs, so `file report`
+    /// never silently returns an empty list right after launch.
+    fn indexing_hint() -> SearchResult {
+        SearchResult {
+            title: "Indexing your files…".into(),
+            subtitle: "Results appear here once the scan finishes (a few seconds)".into(),
+            kind: "hint".into(),
+            provider_id: "files".into(),
+            action: String::new(),
+            icon_rgba: None,
+            score: 0.0,
+        }
+    }
 }
 
 impl SearchProvider for FilesProvider {
@@ -231,6 +267,9 @@ impl SearchProvider for FilesProvider {
 
         let mut results = if term.is_empty() {
             self.recommendations(mode)
+        } else if self.first_scan_in_progress() {
+            // No index yet — show a placeholder instead of a silent empty list.
+            vec![Self::indexing_hint()]
         } else {
             let Ok(entries) = self.entries.lock() else {
                 return Vec::new();
@@ -261,6 +300,9 @@ impl SearchProvider for FilesProvider {
     }
 
     fn activate(&self, _ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
+        if result.kind == "hint" {
+            return Ok(());
+        }
         let path = Path::new(&result.action);
         if !path.exists() {
             return Err(ElementError::Other(format!(
@@ -467,5 +509,58 @@ mod tests {
         assert_eq!(results[0].kind, "folder");
         assert_eq!(results[0].action, r"C:\Users\me\Desktop");
         assert!(results.iter().all(|r| r.kind == "folder"));
+    }
+
+    #[test]
+    fn first_scan_shows_indexing_hint_instead_of_empty_list() {
+        let provider = FilesProvider {
+            entries: Arc::new(Mutex::new(Vec::new())),
+            icons: Arc::new(Mutex::new(HashMap::new())),
+            search_dirs: Vec::new(),
+            roots: Arc::new(Mutex::new(Vec::new())),
+            refresh_in_progress: Arc::new(AtomicBool::new(true)),
+            icon_worker_busy: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+        };
+        let config = crate::config::Config::default();
+        let db = crate::database::Database::new_in_memory();
+        let ctx = SearchContext {
+            config: &config,
+            db: &db,
+        };
+
+        let results = provider.search(&ctx, "file report");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, "hint");
+        assert!(results[0].provider_id == "files");
+        // Activating the hint is a no-op, never an error.
+        assert!(provider.activate(&ctx, &results[0]).is_ok());
+    }
+
+    #[test]
+    fn no_hint_once_index_has_entries() {
+        let provider = FilesProvider {
+            entries: Arc::new(Mutex::new(vec![FileEntry {
+                name: "report_q3.txt".into(),
+                path: r"C:\Users\me\Documents\report_q3.txt".into(),
+                is_dir: false,
+            }])),
+            icons: Arc::new(Mutex::new(HashMap::new())),
+            search_dirs: Vec::new(),
+            roots: Arc::new(Mutex::new(Vec::new())),
+            refresh_in_progress: Arc::new(AtomicBool::new(true)),
+            icon_worker_busy: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+        };
+        let config = crate::config::Config::default();
+        let db = crate::database::Database::new_in_memory();
+        let ctx = SearchContext {
+            config: &config,
+            db: &db,
+        };
+
+        // No match exists, but the index is populated — real results only.
+        let results = provider.search(&ctx, "file zzzz");
+        assert!(results.is_empty());
     }
 }

@@ -45,7 +45,7 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 | Clipboard DB | `rusqlite` (bundled) | `clipboard_entries` table in `~/.element/element.db`. |
 | Window centering | `SetWindowPos` post-show | Centered horizontally, ⅓ from top of primary monitor. |
 | Window effects | **DWM rounded corners** (DWMWCP_ROUND) | Solid #3c3c3c bg + small-radius corners avoids DWM acrylic fragility. |
-| Testing | `cargo test` (44 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, files, URL encoding. |
+| Testing | `cargo test` (46 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, files, URL encoding. |
 | Debug logging | File-based (`~/.element/debug.log`) | Timestamped output via `debug_log!` macro; enabled in debug builds or ELEMENT_DEBUG=1. |
 | Agent reference | `AGENTS.md` | Canonical doc for AI agents — architecture, provider system, design decisions. |
 | Living Doc | `ELEMENT_STATE.md` | This file. |

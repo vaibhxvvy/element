@@ -12,7 +12,7 @@ mod registry;
 pub(crate) mod theme;
 mod ui;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use iced::{window, Theme};
@@ -33,6 +33,22 @@ pub(crate) static WINDOW_FOUND: AtomicBool = AtomicBool::new(false);
 static LAUNCHER_SHOWN: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static LAST_TOGGLE_MS: AtomicU32 = AtomicU32::new(0);
+/// Cached launcher HWND — avoids EnumWindows on every focus check.
+#[cfg(target_os = "windows")]
+static LAUNCHER_HWND: AtomicIsize = AtomicIsize::new(0);
+/// When the launcher was last shown; focus-loss auto-hide waits a short grace
+/// period after showing so SetForegroundWindow has time to take effect.
+#[cfg(target_os = "windows")]
+static LAUNCHER_LAST_SHOWN_MS: AtomicU32 = AtomicU32::new(0);
+/// When the launcher auto-hid due to focus loss; a tray click within a short
+/// window after that is treated as "keep it hidden" instead of re-showing.
+#[cfg(target_os = "windows")]
+static AUTO_HIDDEN_AT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_os = "windows")]
+const FOCUS_LOSS_GRACE_MS: u32 = 250;
+#[cfg(target_os = "windows")]
+const TRAY_SUPPRESS_MS: u32 = 300;
 
 #[cfg(target_os = "windows")]
 const SW_HIDE: i32 = 0;
@@ -83,13 +99,15 @@ fn show_launcher(hwnd: isize) {
     let _ = BringWindowToTop(hwnd);
     let fg = SetForegroundWindow(hwnd);
     debug_log!("SetForegroundWindow returned: {}", fg);
+    LAUNCHER_HWND.store(hwnd, Ordering::SeqCst);
+    LAUNCHER_LAST_SHOWN_MS.store(GetTickCount(), Ordering::SeqCst);
     LAUNCHER_SHOWN.store(true, Ordering::SeqCst);
     HOTKEY_TRIGGERED.store(true, Ordering::SeqCst);
     debug_log!("HOTKEY_TRIGGERED set to true");
 }
 
 #[cfg(target_os = "windows")]
-fn toggle_launcher() {
+fn toggle_launcher(from_tray: bool) {
     let now = GetTickCount();
     let last = LAST_TOGGLE_MS.load(Ordering::SeqCst);
     if now.wrapping_sub(last) < 200 {
@@ -105,11 +123,19 @@ fn toggle_launcher() {
     }
     LAST_TOGGLE_MS.store(now, Ordering::SeqCst);
     WINDOW_FOUND.store(true, Ordering::SeqCst);
+    LAUNCHER_HWND.store(hwnd, Ordering::SeqCst);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if LAUNCHER_SHOWN.load(Ordering::SeqCst) {
             debug_log!("ACTION: hiding launcher");
             hide_launcher(hwnd);
+        } else if from_tray
+            && now.wrapping_sub(AUTO_HIDDEN_AT.load(Ordering::SeqCst)) < TRAY_SUPPRESS_MS
+        {
+            // The click that opened this message also made the launcher lose
+            // focus, and the auto-hide already dismissed it — stay hidden
+            // instead of popping back up.
+            debug_log!("tray toggle suppressed: launcher just auto-hidden");
         } else {
             debug_log!("ACTION: showing launcher");
             show_launcher(hwnd);
@@ -213,7 +239,7 @@ extern "system" fn tray_wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: i
             let mouse_msg = lparam as u32;
             if mouse_msg == WM_LBUTTONDOWN {
                 debug_log!("tray left-click: toggle");
-                toggle_launcher();
+                toggle_launcher(true);
             } else if mouse_msg == WM_RBUTTONUP {
                 let mut pt = POINT { x: 0, y: 0 };
                 GetCursorPos(&mut pt);
@@ -891,7 +917,7 @@ pub fn main() -> iced::Result {
                             tip_hotkey
                         );
                         cancel_sysmenu_mode();
-                        toggle_launcher();
+                        toggle_launcher(false);
                     } else {
                         unsafe { DispatchMessageW(&msg as *const MSG) };
                     }
@@ -901,7 +927,7 @@ pub fn main() -> iced::Result {
                 if hotkey::take_pending_toggle() {
                     debug_log!("LL hook pending — toggling launcher");
                     cancel_sysmenu_mode();
-                    toggle_launcher();
+                    toggle_launcher(false);
                 }
 
                 // Apply DWM effects once the Iced window is created — keep it hidden
@@ -910,6 +936,7 @@ pub fn main() -> iced::Result {
                     let hwnd = find_own_launcher_hwnd();
                     if hwnd != 0 {
                         WINDOW_FOUND.store(true, Ordering::SeqCst);
+                        LAUNCHER_HWND.store(hwnd, Ordering::SeqCst);
                         debug_log!("Iced window found (hwnd={}) – applying DWM effects", hwnd);
                         apply_window_effects(hwnd);
                         ShowWindow(hwnd, SW_HIDE);
@@ -943,9 +970,35 @@ pub fn main() -> iced::Result {
                     }
                 }
 
+                // Auto-hide when the launcher loses focus — clicking another
+                // window or the desktop dismisses it, exactly like Alt+Space.
+                if LAUNCHER_SHOWN.load(Ordering::SeqCst) {
+                    let mut hwnd = LAUNCHER_HWND.load(Ordering::SeqCst);
+                    if hwnd == 0 {
+                        hwnd = find_own_launcher_hwnd();
+                        LAUNCHER_HWND.store(hwnd, Ordering::SeqCst);
+                    }
+                    let now = GetTickCount();
+                    if hwnd != 0
+                        && GetForegroundWindow() != hwnd
+                        && now.wrapping_sub(LAUNCHER_LAST_SHOWN_MS.load(Ordering::SeqCst))
+                            > FOCUS_LOSS_GRACE_MS
+                    {
+                        debug_log!("AUTO-HIDE: launcher lost focus — hiding");
+                        AUTO_HIDDEN_AT.store(now, Ordering::SeqCst);
+                        hide_launcher(hwnd);
+                    }
+                }
+
                 if !has_msg && !hotkey::has_pending_toggle() {
                     // Keep the LL-hook thread responsive; Windows may drop slow hooks.
-                    let delay = if hotkey::hook_active() { 10 } else { 50 };
+                    // Poll faster while the launcher is visible so focus-loss
+                    // dismissal feels instant.
+                    let delay = if LAUNCHER_SHOWN.load(Ordering::SeqCst) || hotkey::hook_active() {
+                        10
+                    } else {
+                        50
+                    };
                     std::thread::sleep(std::time::Duration::from_millis(delay));
                 }
                 loop_count += 1;

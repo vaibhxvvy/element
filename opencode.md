@@ -60,11 +60,35 @@ Fixes:
   junk — verified: 6 root recs, `file report` → 30 real matches.
 - Clean index on the real machine: 6,140 entries (was 25,000 junk-capped).
 
+### Follow-up fix (2nd report — still no files visible) + auto-hide feature
+
+User still saw nothing. Code path proven correct by diag tests, so the two
+real causes were: (1) a **stale tray instance** — the single-instance mutex
+makes `cargo run` re-activate the OLD binary's window; must right-click tray →
+Exit before running a new build. (2) The first scan takes 1–3 s after launch,
+during which `file <query>` returned an empty list with no feedback.
+
+Changes:
+- **Instant roots**: `FilesProvider::new()` publishes `resolve_roots()` result
+  synchronously (cheap is_dir checks), so bare `file` shows Desktop/Documents/
+  ... immediately instead of after the scan.
+- **"Indexing your files…" hint**: while the first scan runs (entries empty +
+  refresh in progress), `file <q>` returns a placeholder result (kind "hint",
+  score 0.0) instead of nothing; activating it is a no-op; icon worker skips it.
+- **Auto-hide on focus loss** (user request): while shown, the background
+  thread polls `GetForegroundWindow` every 10 ms; if the launcher is no longer
+  foreground after a 250 ms grace (`FOCUS_LOSS_GRACE_MS` since
+  `LAUNCHER_LAST_SHOWN_MS`), it hides exactly like Alt+Space. `LAUNCHER_HWND`
+  caches the handle to avoid EnumWindows per poll. Tray-left-click race handled:
+  a tray toggle within `TRAY_SUPPRESS_MS` (300 ms) of an auto-hide keeps the
+  window hidden (`toggle_launcher(from_tray: bool)`; hotkey toggles unaffected).
+- Faster poll (10 ms) while the launcher is visible.
+
 ### Verification
 
 ```bash
 cargo check               # clean
-cargo test                # 44 tests, all pass (13 new: prefix parsing, folder mode, exclusions)
+cargo test                # 46 tests, all pass (15 new: prefix parsing, folder mode, exclusions, hint)
 cargo clippy -- -D warnings  # clean
 cargo fmt                 # clean
 ```

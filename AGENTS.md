@@ -23,7 +23,8 @@ src/
 │                     # Window: PID-based EnumWindows (not FindWindowW)
 │                     # Atomics: HOTKEY_TRIGGERED, HIDE_REQUESTED, EXIT_REQUESTED,
 │                     #          RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH,
-│                     #          WINDOW_FOUND, LAUNCHER_SHOWN, LAST_TOGGLE_MS
+│                     #          WINDOW_FOUND, LAUNCHER_SHOWN, LAST_TOGGLE_MS,
+│                     #          LAUNCHER_HWND, LAUNCHER_LAST_SHOWN_MS, AUTO_HIDDEN_AT
 │
 ├── orchestrator.rs   # Orchestrator — the single entry point for user requests.
 │                     # handle(Request) → Outcome: Search(query) → Results,
@@ -80,6 +81,10 @@ src/
 │   ├── files/        # Raycast-style file search. should_run: "file"/"folder" prefixes.
 │   │   ├── mod.rs    #   FilesProvider: prefix parsing, fuzzy match on names,
 │   │   │             #   lazy icons via revision loop, explorer.exe activation.
+│   │   │             #   Roots published synchronously at construction (bare
+│   │   │             #   `file` shows Desktop/Documents/... instantly); an
+│   │   │             #   "Indexing your files…" hint fills the gap while the
+│   │   │             #   first background scan is still running.
 │   │   └── scan.rs   #   Background walk of curated user folders (Desktop/
 │   │                 #   Documents/...): junk exclusions, depth/entry caps.
 │   └── websearch/    # webbrowser + config.search_url. Always runs, score=-1 (bottom).
@@ -176,6 +181,22 @@ The hotkey thread needs the window width to center the window. Iced owns the rea
 window size. So `config.window_width` is copied to the `WINDOW_WIDTH` atomic at
 startup, and the thread reads that when positioning.
 
+### Auto-hide on focus loss (clicking away)
+
+While the launcher is visible the background thread polls `GetForegroundWindow`
+every ~10 ms. If the foreground window is no longer the launcher (user clicked
+another app, the desktop, Alt+Tab, ...) and more than `FOCUS_LOSS_GRACE_MS`
+(250 ms) has passed since `LAUNCHER_LAST_SHOWN_MS`, it calls `hide_launcher()`
+exactly like the Alt+Space toggle. The grace period lets `SetForegroundWindow`
+finish before the check becomes active. `LAUNCHER_HWND` caches the window handle
+to avoid an `EnumWindows` scan on every poll.
+
+The tray left-click is the one race: the click both steals focus (triggering
+auto-hide) and posts the toggle message. If a tray toggle arrives within
+`TRAY_SUPPRESS_MS` (300 ms) of an auto-hide, the toggle keeps the window hidden
+instead of re-showing it — `toggle_launcher(from_tray: bool)` distinguishes
+tray clicks from hotkey/LL-hook toggles, which always toggle normally.
+
 ### Hotkey fallback: RegisterHotKey → LL hook → fallback combos
 
 Three-tier strategy in `hotkey::install()` (`src/hotkey/mod.rs`):
@@ -257,7 +278,7 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 44 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
+cargo test               # 46 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```
