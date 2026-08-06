@@ -17,18 +17,29 @@ Runs in the system tray. Zero UI until summoned.
 src/
 ├── main.rs           # Entry point. Spawns background thread, boots Iced.
 │                     # Hotkey: RegisterHotKey(NULL, 1, MOD_ALT|MOD_NOREPEAT, VK_SPACE)
+│                     #   Fallback: WH_KEYBOARD_LL hook if RegisterHotKey fails
+│                     #   Single-instance: named mutex guard
 │                     # Tray: hidden message-only window, left-click toggle, right-click Exit
+│                     # Window: PID-based EnumWindows (not FindWindowW)
 │                     # Atomics: HOTKEY_TRIGGERED, HIDE_REQUESTED, EXIT_REQUESTED,
-│                     #          RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH
+│                     #          RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH,
+│                     #          WINDOW_FOUND, LAUNCHER_SHOWN, LAST_TOGGLE_MS
 │
-├── app.rs            # SearchEngine — thin registry wrapper.
-│                     # Holds Arc<Config>, Arc<Database>, ProviderRegistry.
-│                     # search() → creates SearchContext, delegates to registry.
-│                     # activate() → matches result.provider_id to registered provider.
+├── orchestrator.rs   # Orchestrator — the single entry point for user requests.
+│                     # handle(Request) → Outcome: Search(query) → Results,
+│                     # Activate(result) → Activated(Ok/Err), Refresh → Refreshed(rev).
+│                     # Owns Arc<Config>, Arc<Database>, ProviderRegistry; registers
+│                     # all providers in new(). UI never touches providers directly.
+│
+├── hotkey/           # Global hotkey detection (isolated from window show/hide).
+│   └── mod.rs        #   install()/uninstall()/take_pending_toggle()/hook_active()
+│                     #   RegisterHotKey → LL hook → fallback combos (three tiers).
+│                     #   LL hook callback stays tiny — only sets a flag.
 │
 ├── config.rs         # ~/.element/config.toml. Full Default impl.
 │                     # Migrates from legacy config.json on first run.
 │                     # pub(crate) fn data_dir() shared by database.rs.
+│                     # Hotkey parsing: parse_hotkey(), hotkey_fallback_candidates().
 │
 ├── database.rs       # SQLite via rusqlite (bundled). Mutex<Connection>.
 │                     # Tables: clipboard_entries, frecency.
@@ -43,20 +54,32 @@ src/
 │                     # activate() → catch_unwind per provider lookup by provider_id.
 │                     # refresh_all() → catch_unwind per provider.
 │
-├── theme.rs          # Named constants: BG_PRIMARY, BG_SELECTED, BG_INPUT,
+├── theme.rs          # Named constants: BG_PRIMARY (#3c3c3c solid), BG_SELECTED (#505050),
+│                     # BG_INPUT (#1e1e1e), BORDER_COLOR (#4d4d4d), CONTAINER_RADIUS (12px),
 │                     # Brand-kit dark-surface colors plus TEXT_PRIMARY, TEXT_MUTED, TEXT_ERROR,
 │                     # ACCENT, RESULT_HEIGHT, ICON_SIZE, SPACING_*, etc.
 │
 ├── providers/
-│   ├── mod.rs        # SearchProvider trait + SearchContext<'a> { config, db }.
-│   ├── apps.rs       # Background app scan → fuzzy match → frecency → icons.
-│   ├── calculator.rs # evalexpr. should_run: contains digits/math ops.
-│   ├── emoji.rs      # emojis crate. should_run: starts with "emoji" or ":".
-│   ├── clipboard.rs  # SQLite clipboard table. should_run: "cbhist" or "clip".
-│   └── websearch.rs  # webbrowser + config.search_url. Always runs, score=-1 (bottom).
+│   ├── mod.rs        # SearchProvider trait + SearchContext<'a> { config, db }
+│   │                 # + SearchResult (provider contract lives with the providers).
+│   ├── apps/         # Feature folder: app search.
+│   │   ├── mod.rs    #   AppsProvider: fuzzy match → frecency boost → icons, recommendations.
+│   │   ├── scan.rs   #   Background Start Menu scan (walkdir, .lnk → exe, dedup).
+│   │   ├── fuzzy.rs  #   Character-level fuzzy scorer (pure, unit-tested).
+│   │   └── icons.rs  #   Icon pipeline: .ico preference, IShellItemImageFactory, PNG cache.
+│   ├── calculator/   # evalexpr. should_run: contains digits/math ops.
+│   │   └── mod.rs
+│   ├── emoji/        # emojis crate. should_run: starts with "emoji" or ":".
+│   │   └── mod.rs
+│   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".
+│   │   └── mod.rs
+│   └── websearch/    # webbrowser + config.search_url. Always runs, score=-1 (bottom).
+│       └── mod.rs
 │
 └── ui/
-    └── mod.rs        # Iced views. Embedded brand mark, focused TextInput, Scrollable.
+    └── mod.rs        # Iced views. Search TextInput, scrollable results list,
+                      # status row for activation feedback. Sends Request to the
+                      # Orchestrator via engine.handle(Request) and matches Outcome.
 ```
 
 ## Provider System
@@ -91,9 +114,9 @@ pub struct SearchResult {
 
 ### Adding a new provider
 
-1. Create `src/providers/your_thing.rs`, implement `SearchProvider + Send + Sync`.
+1. Create `src/providers/your_thing/mod.rs`, implement `SearchProvider + Send + Sync`.
 2. Add `pub mod your_thing;` to `src/providers/mod.rs`.
-3. Register in `app.rs::SearchEngine::new()`: `registry.add(Box::new(YourProvider::new()));`
+3. Register in `orchestrator.rs::Orchestrator::new()`: `registry.add(Box::new(YourProvider::new()));`
 4. If it needs I/O on overlay open, make `refresh()` non-blocking and increment
    `revision()` only after publishing new data.
 5. Add unit tests for any non-trivial logic.
@@ -121,7 +144,7 @@ Use scores strategically:
 
 The background thread registers a real hotkey and runs a PeekMessageW loop. When the
 queue is empty it sleeps 50ms instead of busy-waiting. This means **zero CPU usage**
-when idle. Look at the loop in `main.rs:354-408`.
+when idle. Look at the loop in `main.rs` (the message loop inside `fn main`).
 
 ### Hidden message window for tray
 
@@ -142,6 +165,44 @@ know about Win32 window management.
 The hotkey thread needs the window width to center the window. Iced owns the real
 window size. So `config.window_width` is copied to the `WINDOW_WIDTH` atomic at
 startup, and the thread reads that when positioning.
+
+### Hotkey fallback: RegisterHotKey → LL hook → fallback combos
+
+Three-tier strategy in `hotkey::install()` (`src/hotkey/mod.rs`):
+
+1. **RegisterHotKey** — cleanest approach, OS-level global hotkey. Fails if another
+   app already claimed the same combo.
+2. **WH_KEYBOARD_LL hook** — if RegisterHotKey fails, installs a low-level keyboard
+   hook that intercepts the key event *before* the competing app sees it. Returns 1
+   to swallow the event, preventing the other app's hotkey from firing.
+3. **Fallback combos** — if both tier 1 and 2 fail, try `hotkey_fallback_candidates()`
+   (Alt+Space, Ctrl+Space, Ctrl+Shift+Space, etc.) until one succeeds.
+
+Key-repeat is prevented by the `TOGGLE_PENDING` atomic — the LL hook only sets the
+flag on the first keydown and swallows the matching keyup until it is consumed.
+
+### Single-instance guard
+
+Named mutex (`Local\ElementLauncherSingleInstance`) via `CreateMutexW`. On
+`ERROR_ALREADY_EXISTS`, the second instance calls `find_any_launcher_hwnd()` +
+`show_launcher()` to bring the existing window to foreground, then exits.
+The first instance never calls `CloseHandle` — the kernel releases the mutex
+automatically on process termination.
+
+### PID-based window finding — not FindWindowW
+
+`find_own_launcher_hwnd()` uses `EnumWindows` + `GetWindowThreadProcessId` + PID
+verification instead of `FindWindowW`. This avoids accidentally targeting another
+process's window that happens to be titled "Element".
+`find_any_launcher_hwnd()` still uses `FindWindowW` for cross-instance activation
+(second instance activating the first).
+
+### Safe FFI wrappers — no `unsafe` at call sites
+
+Every Win32 API function is wrapped in an `extern "system" fn` that declares the
+external symbol with `#[link(name = "...")]` and calls it inside an `unsafe { }` block.
+The wrapper itself is safe (`extern "system" fn`, not `unsafe extern`), keeping
+`unsafe` out of all call sites. Each wrapper includes a doc comment with the MSDN link.
 
 ### data_dir() in config.rs
 
@@ -180,7 +241,7 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 27 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, URL encoding)
+cargo test               # 31 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, URL encoding)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```
@@ -188,7 +249,7 @@ cargo clippy -- -D warnings   # lint (blocking on CI)
 ## Platform Code
 
 Window and tray FFI lives in `main.rs`. Shortcut resolution and icon extraction stay
-isolated in `providers/apps.rs`, where COM is initialized only for the helper call.
+isolated in `providers/apps/icons.rs`, where COM is initialized only for the helper call.
 
 Do not scatter `#[cfg(target_os = "windows")]` through providers or UI code.
 If a provider needs platform-specific logic, isolate it behind a helper.

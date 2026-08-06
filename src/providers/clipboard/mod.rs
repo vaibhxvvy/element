@@ -1,5 +1,5 @@
-use crate::app::SearchResult;
 use crate::error::ElementError;
+use crate::providers::SearchResult;
 use crate::providers::{SearchContext, SearchProvider};
 
 pub struct ClipboardProvider;

@@ -31,3 +31,6 @@ Desktop.ini
 /element-*-win64/
 /element-*.zip
 /element-*.exe
+
+# Vendored winget-pkgs fork clone (maintained outside this repo)
+/winget-pkgs/

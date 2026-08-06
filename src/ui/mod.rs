@@ -7,8 +7,9 @@ use iced::{
     Color, Element, Length, Subscription, Theme,
 };
 
-use crate::app::SearchResult;
 use crate::debug_log;
+use crate::orchestrator::{Orchestrator, Outcome, Request};
+use crate::providers::SearchResult;
 use crate::theme;
 use crate::{EXIT_REQUESTED, HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED};
 
@@ -24,7 +25,7 @@ pub enum Message {
 }
 
 pub struct ElementApp {
-    pub engine: crate::app::SearchEngine,
+    pub engine: Orchestrator,
     pub input: String,
     pub results: Vec<SearchResult>,
     pub selected_index: i32,
@@ -50,7 +51,10 @@ fn update_window_height(results: &[SearchResult], has_status: bool) {
 }
 
 fn search(app: &mut ElementApp, query: &str) -> iced::Task<Message> {
-    app.results = app.engine.search(query);
+    app.results = match app.engine.handle(Request::Search(query.to_string())) {
+        Outcome::Results(results) => results,
+        Outcome::Activated(_) | Outcome::Refreshed(_) => Vec::new(),
+    };
     app.selected_index = if app.results.is_empty() { -1 } else { 0 };
     app.search_revision = app.engine.revision();
     update_window_height(&app.results, app.status.is_some());
@@ -62,17 +66,20 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
         return iced::Task::none();
     };
 
-    match app.engine.activate(&result) {
-        Ok(()) if matches!(result.kind.as_str(), "calc" | "emoji" | "clipboard") => {
+    match app.engine.handle(Request::Activate(result.clone())) {
+        Outcome::Activated(Ok(()))
+            if matches!(result.kind.as_str(), "calc" | "emoji" | "clipboard") =>
+        {
             app.status = Some("Copied to clipboard".into());
             update_window_height(&app.results, true);
         }
-        Ok(()) => HIDE_REQUESTED.store(true, Ordering::SeqCst),
-        Err(error) => {
+        Outcome::Activated(Ok(())) => HIDE_REQUESTED.store(true, Ordering::SeqCst),
+        Outcome::Activated(Err(error)) => {
             eprintln!("[element] failed to activate '{}': {error}", result.title);
             app.status = Some(format!("Could not open {}", result.title));
             update_window_height(&app.results, true);
         }
+        Outcome::Results(_) | Outcome::Refreshed(_) => {}
     }
 
     iced::Task::none()
@@ -93,7 +100,10 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
         }
         Message::KeyPressed(key, _mods) => match key {
             Key::Named(key::Named::Escape) => {
-                debug_log!("UI: Escape pressed – hiding launcher");
+                // Single Esc hides (same as Alt+Space close) — does not quit.
+                debug_log!("UI: Escape – hiding launcher");
+                app.input.clear();
+                app.status = None;
                 HIDE_REQUESTED.store(true, Ordering::SeqCst);
             }
             Key::Named(key::Named::ArrowUp) => {
@@ -127,7 +137,9 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
             }
             if HOTKEY_TRIGGERED.swap(false, Ordering::SeqCst) {
                 debug_log!("UI: HOTKEY_TRIGGERED received – refreshing and focusing input");
-                app.engine.refresh_all();
+                if let Outcome::Refreshed(rev) = app.engine.handle(Request::Refresh) {
+                    app.search_revision = rev;
+                }
                 app.input.clear();
                 app.status = None;
                 let search_task = search(app, "");

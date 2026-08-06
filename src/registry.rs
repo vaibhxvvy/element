@@ -1,8 +1,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::app::SearchResult;
 use crate::error::ElementError;
-use crate::providers::{SearchContext, SearchProvider};
+use crate::providers::{SearchContext, SearchProvider, SearchResult};
 
 /// Holds all registered SearchProviders and dispatches search/activate/refresh
 /// across them. Each provider's search() and activate() calls are wrapped in

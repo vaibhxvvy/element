@@ -1,6 +1,6 @@
 # Element — Living State Document
 
-> **Last updated:** 2026-07-28 (Phase 14 — nonblocking app indexing and startup recovery)
+> **Last updated:** 2026-08-06 (Phase 16 — module/domain split: Orchestrator, feature folders)
 > **Purpose:** Single source of truth for architecture decisions, project state, and next moves.
 
 ---
@@ -20,6 +20,10 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 | UI Framework | **Iced 0.13** (wgpu) | Retained-mode, native GPU, composable widgets, subscriptions. |
 | Windowing | Iced (winit backend) | Borderless, always-on-top, starts hidden. |
 | Global Hotkey | `RegisterHotKey` + `PeekMessageW` loop | No CPU polling. Background thread sleeps when idle, wakes on message. |
+| Hotkey Fallback | **WH_KEYBOARD_LL** hook | When RegisterHotKey fails, LL hook intercepts key before competing app sees it. Three tiers: RegisterHotKey → LL hook → fallback combos. |
+| Single Instance | Named mutex (`CreateMutexW`) | Second instance activates first via FindWindowW + show_launcher, then exits. |
+| Window Finding | **EnumWindows** + PID for own window; FindWindowW for cross-instance | PID verification avoids title collisions with other processes. |
+| FFI Safety | Safe `extern "system" fn` wrappers | Every Win32 API wrapped — no `unsafe` at call sites. All wrappers include MSDN doc links. |
 | Tray Icon | `Shell_NotifyIconW` with hidden message-only window | Left-click toggles overlay; right-click shows Exit menu. |
 | Keyboard in-app | Text-input submit + keyboard subscription | Enter submits the selected result; Escape and arrows are handled globally. |
 | Config | **TOML** via `toml` crate | `~/.element/config.toml`, migrates from old `config.json`. |
@@ -31,15 +35,18 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 | Auto-focus | `text_input::focus("search")` | Search bar focused immediately on window show. |
 | Adaptive height | Win32 `SetWindowPos` via atomics | `52 + min(results, 10) × 42` px, capped at 500. |
 | Provider arch | **SearchProvider trait** + ProviderRegistry | Each capability isolated behind a trait, `catch_unwind` per provider. |
+| Orchestration | **Orchestrator** (`src/orchestrator.rs`) | Single entry point: `handle(Request) → Outcome`. UI sends `Request::Search/Activate/Refresh`, never touches providers directly. |
 | Error handling | `ElementError` (thiserror) | Central error type covering config, DB, I/O, icon, provider. |
-| Theme tokens | `theme.rs` constants | Named colors/spacing instead of inline values; ready for dark mode. |
+| Theme tokens | `theme.rs` constants | Named colors (#3c3c3c bg, #505050 selected, #1e1e1e input, #4d4d4d border) with 12px radius. |
 | Web search | `webbrowser` crate | Opens configured `search_url` with query substituted for `%s`. |
 | Calculator | `evalexpr = "11"` | Detects math expressions, evaluates, copies result. |
 | Emoji | `emojis = "0.6"` | Search by name or shortcode on `emoji`/`:` prefix. |
-| Clipboard | `arboard` (write only) | Copy results to clipboard. |
+| Clipboard | Win32 clipboard API (copy only) | Copy results to clipboard via OpenClipboard/SetClipboardData. |
 | Clipboard DB | `rusqlite` (bundled) | `clipboard_entries` table in `~/.element/element.db`. |
-| Window centering | `SetWindowPos` post-show | Centered horizontally, ⅓ from top of monitor. |
-| Testing | `cargo test` (27 tests) | fuzzy scorer, executable and frecency deduplication, calculator detection, config round-trip, clipboard, URL encoding. |
+| Window centering | `SetWindowPos` post-show | Centered horizontally, ⅓ from top of primary monitor. |
+| Window effects | **DWM rounded corners** (DWMWCP_ROUND) | Solid #3c3c3c bg + small-radius corners avoids DWM acrylic fragility. |
+| Testing | `cargo test` (31 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, URL encoding. |
+| Debug logging | File-based (`~/.element/debug.log`) | Timestamped output via `debug_log!` macro; enabled in debug builds or ELEMENT_DEBUG=1. |
 | Agent reference | `AGENTS.md` | Canonical doc for AI agents — architecture, provider system, design decisions. |
 | Living Doc | `ELEMENT_STATE.md` | This file. |
 
@@ -50,25 +57,39 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 ```
 element/
 ├── src/
-│   ├── main.rs        # Entry point: RegisterHotKey + PeekMessageW loop, tray window, Iced bootstrap
-│   ├── app.rs         # SearchEngine: owns ProviderRegistry, holds Arc<Config> + Arc<Database>
-│   ├── config.rs      # TOML config with JSON migration, shared data_dir()
+│   ├── main.rs        # Entry point: RegisterHotKey + PeekMessageW loop, LL hook fallback,
+│   │                  #   single-instance guard, PID-based EnumWindows, tray window, Iced bootstrap
+│   ├── orchestrator.rs # Orchestrator: single entry point — handle(Request) → Outcome;
+│   │                  #   owns Arc<Config> + Arc<Database> + ProviderRegistry, registers providers
+│   ├── config.rs      # TOML config with JSON migration, shared data_dir(), hotkey parsing
 │   ├── database.rs    # SQLite — clipboard_entries + frecency tables
+│   ├── debug_log.rs   # File-based debug logger (~/.element/debug.log)
 │   ├── error.rs       # ElementError enum (thiserror)
 │   ├── registry.rs    # ProviderRegistry: iterates providers, catch_unwind isolation
-│   ├── theme.rs       # Named color/spacing/radius tokens
+│   ├── theme.rs       # Named color/spacing/radius tokens (dark palette #3c3c3c)
+│   ├── hotkey/        # Global hotkey detection (RegisterHotKey → LL hook → fallbacks)
+│   │   └── mod.rs
 │   ├── providers/
-│   │   ├── mod.rs        # SearchProvider trait + SearchContext
-│   │   ├── apps.rs       # Installed-app scan + fuzzy match + frecency + icon pipeline
-│   │   ├── calculator.rs # evalexpr-based calculator
-│   │   ├── emoji.rs      # Emoji search via emojis crate
-│   │   ├── clipboard.rs  # Clipboard history from SQLite
-│   │   └── websearch.rs  # Web search fallback (always at bottom)
+│   │   ├── mod.rs        # SearchProvider trait + SearchContext + SearchResult
+│   │   ├── apps/         # App search feature folder
+│   │   │   ├── mod.rs    #   AppsProvider: fuzzy match → frecency boost → recommendations
+│   │   │   ├── scan.rs   #   Start Menu scan (walkdir, .lnk → exe, dedup)
+│   │   │   ├── fuzzy.rs  #   Character-level fuzzy scorer
+│   │   │   └── icons.rs  #   Icon pipeline: .ico, IShellItemImageFactory, PNG cache
+│   │   ├── calculator/   # evalexpr-based calculator
+│   │   │   └── mod.rs
+│   │   ├── emoji/        # Emoji search via emojis crate
+│   │   │   └── mod.rs
+│   │   ├── clipboard/    # Clipboard history from SQLite
+│   │   │   └── mod.rs
+│   │   └── websearch/    # Web search fallback (always at bottom)
+│   │       └── mod.rs
 │   └── ui/
-│       └── mod.rs     # Iced views: search bar, result rows with icons, styles (uses theme.rs tokens)
+│       └── mod.rs     # Iced views: search bar, result rows with icons, status feedback
 ├── brandkit/          # Brand assets
 ├── Cargo.toml
 ├── README.md
+├── AGENTS.md          # Canonical AI agent reference
 └── ELEMENT_STATE.md
 ```
 
@@ -76,23 +97,36 @@ element/
 
 ```
 Background thread (message loop, 50ms sleep when idle):
-  RegisterHotKey(NULL, 1, MOD_ALT|MOD_NOREPEAT, VK_SPACE)
-   on WM_HOTKEY → inspect IsWindowVisible; hide when shown, otherwise restore,
-                  center with SetWindowPos(HWND_TOPMOST, SWP_SHOWWINDOW), foreground,
-                  and request Iced input focus
+  register_launcher_hotkey():
+    1. RegisterHotKey(NULL, 1, MOD_ALT|MOD_NOREPEAT, VK_SPACE)  ← preferred
+    2. If fails, install WH_KEYBOARD_LL hook that swallows the event before
+       the competing app sees it
+    3. If both fail, try fallback combos (Alt+Space, Ctrl+Space, ...)
+
+  on WM_HOTKEY → toggle_launcher():
+    find_own_launcher_hwnd() using EnumWindows + PID
+    inspect IsWindowVisible; hide when shown, otherwise restore,
+    center with SetWindowPos(HWND_TOPMOST, SWP_SHOWWINDOW), foreground,
+    and set HOTKEY_TRIGGERED atomic
+
   on tray Exit → EXIT_REQUESTED → Iced exits; WM_QUIT exits this thread
   on HIDE_REQUESTED atomic → ShowWindow(SW_HIDE)
   on RESIZE_REQUESTED atomic → SetWindowPos resize
 
+  ensure_single_instance():
+    CreateMutexW("Local\ElementLauncherSingleInstance")
+    on ERROR_ALREADY_EXISTS → find_any_launcher_hwnd() + show_launcher() → exit
+    Keep mutex open for process lifetime
+
 Hidden tray window (class "ElementTrayClass"):
-  on WM_APP + WM_LBUTTONDOWN → toggle using the real Win32 visibility state
+  on WM_APP + WM_LBUTTONDOWN → toggle using IsWindowVisible
   on WM_APP + WM_RBUTTONUP → TrackPopupMenu with "Exit"
 
-Iced subscription (30ms Tick):
-  Consumes HOTKEY_TRIGGERED → clears input, requests an app-index refresh, shows current recommendations, selects first result
-  Detects a provider revision change → reruns the current query after new app data is published
-  Returns text_input::focus("search") → search bar auto-focused
-  scrollable::scroll_to("results", AbsoluteOffset) → scrolls to selected item
+Iced subscription (100ms Tick):
+  Consumes HOTKEY_TRIGGERED → clears input, requests an app-index refresh,
+    shows current recommendations, selects first result
+  Detects a provider revision change → reruns current query
+  Auto-dismisses status message after 2 seconds
 
 Iced keyboard + input handling:
   TextInput.on_submit(Enter) → engine.activate(exact selected result)
@@ -106,8 +140,9 @@ Iced update → InputChanged:
   RESIZE_REQUESTED = true → thread calls SetWindowPos
 
 Iced view:
-  TextInput(id="search") → on_input(InputChanged)
-  Scrollable (result rows) → each: indicator, icon, title, subtitle
+  TextInput → on_input(InputChanged), on_submit(Enter)
+  Scrollable (result rows) → each: icon, title, subtitle
+  Status row → shows "Copied!", "Launched...", errors (auto-dismiss 2s)
 ```
 
 ---
@@ -118,7 +153,13 @@ Iced view:
 
 - **Iced 0.13 migration**: wgpu backend, retained-mode UI, keyboard subscriptions.
 - **Register-based hotkey**: `RegisterHotKey` + `PeekMessageW` loop — zero CPU when idle.
+- **Low-level keyboard hook fallback**: WH_KEYBOARD_LL installed when RegisterHotKey fails; intercepts key before competing app, swallows event. Key-repeat prevented via HOOK_KEY_HELD atomic.
+- **Single-instance guard**: named mutex (`Local\ElementLauncherSingleInstance`); second instance activates the first via FindWindowW + show_launcher then exits.
+- **PID-based window finding**: `find_own_launcher_hwnd()` uses EnumWindows + GetWindowThreadProcessId instead of FindWindowW to avoid title collisions.
+- **Safe FFI wrappers**: every Win32 API wrapped in `extern "system" fn` with `#[link(...)]` — no `unsafe` at call sites, all wrappers include MSDN doc links.
 - **System tray icon**: `Shell_NotifyIconW` with hidden message-only window, left-click toggle, right-click Exit.
+- **Scored fuzzy matching**: word boundary, camelCase, consecutive, early-match bonuses + gap penalty.
+- **Frecency ranking**: SQLite frecency table; `count / (days_since + 1)` hybrid boost capped at 3×.
 - **Scored fuzzy matching**: word boundary, camelCase, consecutive, early-match bonuses + gap penalty.
 - **Frecency ranking**: SQLite frecency table; `count / (days_since + 1)` hybrid boost capped at 3×.
 - **Recommendations on open**: shows top frecency apps plus remaining apps alphabetically, with the first result selected.
@@ -135,31 +176,34 @@ Iced view:
 - **Foreground focus and submit**: Alt+Space and tray opening call `SetForegroundWindow` before Iced focuses the search input. The input owns Enter with `on_submit`; Escape remains a global close action.
 - **Visibility recovery**: Alt+Space and tray left-click read `IsWindowVisible`, eliminating the stale visibility cache. Showing restores and foregrounds Element, clears an obsolete hide request, and then asks Iced to focus the search input.
 - **Nonblocking app index**: `AppsProvider` launches its Start Menu/COM/icon scan on a single named worker thread. Window creation and hotkey handling never wait for that scan; a provider revision refreshes the visible query after the new index is published.
-- **Branded launcher shell**: the embedded `brandkit/app-icons/icon-64.png` mark is shown in the header. The compact dark surface uses the documented Ink, Primary, Core White, and Text Grey palette.
-- **Window focus fix**: `ShowWindow(SW_RESTORE)`, `SetWindowPos(hwnd, HWND_TOPMOST, ..., SWP_SHOWWINDOW)`, and `SetForegroundWindow` are used together before Iced focuses the input.
-- **Auto-scroll**: `scrollable::scroll_to()` with `AbsoluteOffset` on arrow up/down and input change.
-- **Hidden scrollbar**: Custom `element_scrollable_style()` with transparent scroller and no rail.
-- **Clippy cleanup**: All warnings fixed across `theme.rs`, `main.rs`, `apps.rs`, `ui/mod.rs`.
-- **Theme tokens**: `theme.rs` with named colors (BG_PRIMARY, TEXT_PRIMARY, ACCENT, etc.), spacing, sizing, radius. All inline values replaced in `ui/mod.rs`.
-- **Tests**: 27 unit tests covering fuzzy scorer, executable target validation, legacy/current frecency deduplication, calculator detection, config round-trip/JSON-migration, clipboard ordering, and web URL encoding.
-- **CI workflow**: `.github/workflows/ci.yml` with `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo build` on Windows.
-- **Release workflow**: `.github/workflows/release.yml` triggered on tag push, builds release binary, packages portable zip.
+- **DWM acrylic fix**: reordered SetWindowCompositionAttribute before WS_EX_LAYERED; falls back to opaque bg on failure. Switched Theme::Light → Theme::Dark to prevent white bleed-through.
+- **Dark UI design**: solid #3c3c3c bg, #505050 selected rows, #1e1e1e input, #4d4d4d 2px border stroke, 12px DWM rounded corners.
+- **Comprehensive debug logging**: file-based debug_log! macro, timestamped output to ~/.element/debug.log, detailed logging at every Win32 API boundary.
+- **Hotkey fallback strategy**: RegisterHotKey → WH_KEYBOARD_LL hook → fallback combos. LL hook swallows key event before competing app sees it. Key-repeat prevented by HOOK_KEY_HELD atomic.
+- **Single-instance guard**: named mutex with second-instance activation via find_any_launcher_hwnd() + show_launcher().
+- **PID-based window finding**: own-window lookup via EnumWindows + GetWindowThreadProcessId (not FindWindowW), avoiding title collisions. find_any_launcher_hwnd() retains FindWindowW for cross-instance activation.
+- **Safe FFI wrappers**: every Win32 API wrapped in `extern "system" fn` with `#[link(name = "...")]` — no `unsafe` at call sites. All wrappers include MSDN doc references.
+- **Doc comments**: full Rust doc comments across all 15 source files — architecture overviews, design rationales, field docs, unit test docs.
+- **opencode.md** updated with full session log.
+- **AGENTS.md** updated with new atomics, LL hook, single-instance, EnumWindows, safe FFI patterns.
+- **ELEMENT_STATE.md** updated with new tech stack entries, architecture, and risk mitigations.
+- **Module/domain split (Phase 16)**: `app.rs` → `orchestrator.rs` with `Request`/`Outcome` API; `hotkey.rs` → `hotkey/` folder; providers split into per-feature folders (`apps/{mod,scan,fuzzy,icons}`, `calculator/`, `emoji/`, `clipboard/`, `websearch/`); `SearchResult` moved into `providers/mod.rs`. UI routes all actions through `engine.handle(Request)`.
 
 ### Known issues
 
-- DWM acrylic blur not yet implemented (needs winit window handle from Iced).
+- DWM acrylic blur not yet implemented (needs winit window handle from Iced). Current approach: solid #3c3c3c bg with DWM rounded corners.
 - Window centered at fixed position — no multi-monitor DPI awareness.
-- `FindWindowW("Element")` looks up window by title — fragile if another window has same title.
 - Start Menu shortcuts without an existing `.exe` target are intentionally skipped, so they cannot be launched through a stale `.lnk` path.
+- `find_any_launcher_hwnd()` still uses `FindWindowW` for cross-instance activation — fragile if another window has same title.
 
 ---
 
 ## 5. Next Moves
 
-1. Manually smoke-test representative Start Menu shortcuts (classic Win32, custom `.ico`, duplicate titles) in a real Windows desktop session.
-2. DWM acrylic backdrop via `RunWithHandle` to get HWND.
-3. File search provider (index user directories, `.gitignore`-style filtering).
-4. Clipboard monitor (watch OS clipboard, auto-store in SQLite).
+1. Manually smoke-test: Alt+Space toggle, app launch, calculator, emoji, clipboard, websearch, tray icon, single-instance, hotkey conflict recovery.
+2. File search provider (index user directories, `.gitignore`-style filtering).
+3. Clipboard monitor (watch OS clipboard, auto-store in SQLite).
+4. Persistent app refresh worker (periodic background scan without blocking overlay).
 5. Plugin system (custom shell scripts / WASM plugins).
 
 ---
@@ -168,11 +212,13 @@ Iced view:
 
 | Risk | Mitigation |
 |------|-----------|
-| `FindWindowW` may find wrong HWND | PID verification via `GetWindowThreadProcessId` could be added |
-| Icon extraction may fail on some .lnk files | Falls back to `None`; all-white icon filter; disk caching reduces re-failures |
+| `FindWindowW` may find wrong HWND | PID verification via `EnumWindows` + `GetWindowThreadProcessId` used for own-window lookup; FindWindowW only used for cross-instance activation |
+| Icon extraction may fail on some .lnk files | Falls back to `None`; disk caching reduces re-failures |
 | Provider panic crashes overlay | `catch_unwind` at registry level per search/activate call |
 | Poisoned mutex kills app | All `.lock()` replaced with `match`/`.ok()` |
 | Windows foreground policy can reject focus | A show request restores, raises, and foregrounds the launcher before Iced focuses the input; real-desktop smoke testing remains required |
+| Hotkey conflict with other apps | Three-tier fallback: RegisterHotKey → LL hook (swallows event) → fallback combos |
+| Unsafe FFI misuse | All Win32 APIs wrapped in safe `extern "system" fn` — no `unsafe` at call sites |
 
 ---
 

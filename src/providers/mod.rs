@@ -1,4 +1,3 @@
-use crate::app::SearchResult;
 use crate::config::Config;
 use crate::database::Database;
 use crate::error::ElementError;
@@ -8,6 +7,23 @@ pub mod calculator;
 pub mod clipboard;
 pub mod emoji;
 pub mod websearch;
+
+/// One actionable search result, owned by the provider that produced it.
+///
+/// `action` carries the exact provider-owned data needed to activate this
+/// exact result — never recover a selected item by its visible title, because
+/// titles are not unique.
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub title: String,
+    pub subtitle: String,
+    pub kind: String,
+    pub provider_id: String,
+    /// Provider-owned data used to activate this exact result.
+    pub action: String,
+    pub icon_rgba: Option<(Vec<u8>, u32, u32)>,
+    pub score: f64,
+}
 
 pub struct SearchContext<'a> {
     pub config: &'a Config,
