@@ -309,7 +309,7 @@ impl SearchProvider for FilesProvider {
         parse_query(query).is_some()
     }
 
-    fn search(&self, _ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
+    fn search(&self, ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
         let Some(pq) = parse_query(query) else {
             return Vec::new();
         };
@@ -338,7 +338,13 @@ impl SearchProvider for FilesProvider {
                 if let Some(score) = fuzzy_score(&pq.term, &entry.name) {
                     let score =
                         base + score * per_char + if entry.is_dir { folder_bonus } else { 0.0 };
-                    results.push(Self::result_for(entry, score));
+                    // Frecency boost — frequently opened files rank higher.
+                    // Same decay curve as apps but capped at 2× so a hot file
+                    // can never flood past the prefixed score floor in bare
+                    // searches (max bare ≈ 2 × 25 < 120).
+                    let frecency = ctx.db.file_frecency_score(&entry.path);
+                    let boost = 1.0 + (frecency * 5.0).min(1.0);
+                    results.push(Self::result_for(entry, score * boost));
                 }
             }
             results.sort_by(|a, b| {
@@ -356,7 +362,7 @@ impl SearchProvider for FilesProvider {
         results
     }
 
-    fn activate(&self, _ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
+    fn activate(&self, ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
         if result.kind == "hint" {
             return Ok(());
         }
@@ -373,6 +379,7 @@ impl SearchProvider for FilesProvider {
             .arg(&result.action)
             .spawn()
             .map_err(ElementError::Io)?;
+        ctx.db.record_file_open(&result.action);
         Ok(())
     }
 
@@ -646,6 +653,50 @@ mod tests {
         assert_eq!(results[0].kind, "folder");
         assert_eq!(results[0].action, r"C:\Users\me\Desktop");
         assert!(results.iter().all(|r| r.kind == "folder"));
+    }
+
+    #[test]
+    fn frecency_boosts_frequently_opened_files() {
+        let provider = FilesProvider {
+            entries: Arc::new(Mutex::new(vec![
+                FileEntry {
+                    name: "report_q3.txt".into(),
+                    path: r"C:\Users\me\Documents\report_q3.txt".into(),
+                    is_dir: false,
+                },
+                FileEntry {
+                    name: "report_q4.txt".into(),
+                    path: r"C:\Users\me\Documents\report_q4.txt".into(),
+                    is_dir: false,
+                },
+            ])),
+            icons: Arc::new(Mutex::new(HashMap::new())),
+            search_dirs: Vec::new(),
+            roots: Arc::new(Mutex::new(Vec::new())),
+            refresh_in_progress: Arc::new(AtomicBool::new(false)),
+            icon_worker_busy: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+        };
+        let config = crate::config::Config::default();
+        let db = crate::database::Database::new_in_memory();
+        // q4 was opened twice; q3 never. Both fuzzy-match "report" equally, so
+        // only the frecency boost can put q4 ahead (alphabetical order favors
+        // q3 on a tie).
+        db.record_file_open(r"C:\Users\me\Documents\report_q4.txt");
+        db.record_file_open(r"C:\Users\me\Documents\report_q4.txt");
+        let ctx = SearchContext {
+            config: &config,
+            db: &db,
+        };
+
+        let results = provider.search(&ctx, "file report");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "report_q4.txt");
+        assert!(results[0].score > results[1].score);
+
+        // Case-insensitive query: "REPORT" still matches and boosts q4.
+        let results = provider.search(&ctx, "file REPORT");
+        assert_eq!(results[0].title, "report_q4.txt");
     }
 
     #[test]

@@ -28,6 +28,11 @@ impl Database {
                 app_name TEXT PRIMARY KEY,
                 count INTEGER NOT NULL DEFAULT 1,
                 last_used DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS file_frecency (
+                path TEXT PRIMARY KEY,
+                count INTEGER NOT NULL DEFAULT 1,
+                last_used DATETIME DEFAULT CURRENT_TIMESTAMP
             );",
         )
         .ok();
@@ -79,6 +84,11 @@ impl Database {
                 app_name TEXT PRIMARY KEY,
                 count INTEGER NOT NULL DEFAULT 1,
                 last_used DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS file_frecency (
+                path TEXT PRIMARY KEY,
+                count INTEGER NOT NULL DEFAULT 1,
+                last_used DATETIME DEFAULT CURRENT_TIMESTAMP
             );",
         )
         .ok();
@@ -98,6 +108,38 @@ impl Database {
             params![app_name],
         )
         .ok();
+    }
+
+    /// Case-normalized key for the file frecency table — Windows paths are
+    /// case-insensitive, so `C:\Reports\Q3` and `c:\reports\q3` must collide.
+    fn file_key(path: &str) -> String {
+        path.to_lowercase()
+    }
+
+    pub fn record_file_open(&self, path: &str) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        conn.execute(
+            "INSERT INTO file_frecency (path, count, last_used) VALUES (?1, 1, CURRENT_TIMESTAMP)
+             ON CONFLICT(path) DO UPDATE SET count = count + 1, last_used = CURRENT_TIMESTAMP",
+            params![Self::file_key(path)],
+        )
+        .ok();
+    }
+
+    pub fn file_frecency_score(&self, path: &str) -> f64 {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return 0.0,
+        };
+        conn.query_row(
+            "SELECT count * (1.0 / (julianday('now') - julianday(last_used) + 1)) FROM file_frecency WHERE path = ?1",
+            params![Self::file_key(path)],
+            |row| row.get::<_, f64>(0),
+        )
+        .unwrap_or(0.0)
     }
 
     pub fn top_frecency(&self, limit: usize) -> Vec<(String, i64, String)> {
@@ -262,5 +304,30 @@ mod tests {
             score2,
             score1
         );
+    }
+
+    #[test]
+    fn file_frecency_starts_at_zero() {
+        let db = Database::new_in_memory();
+        assert_eq!(db.file_frecency_score(r"C:\Users\me\report.txt"), 0.0);
+    }
+
+    #[test]
+    fn file_frecency_records_and_increments() {
+        let db = Database::new_in_memory();
+        db.record_file_open(r"C:\Users\me\report.txt");
+        let s1 = db.file_frecency_score(r"C:\Users\me\report.txt");
+        assert!(s1 > 0.0);
+
+        db.record_file_open(r"C:\Users\me\report.txt");
+        let s2 = db.file_frecency_score(r"C:\Users\me\report.txt");
+        assert!(s2 > s1, "second open should increase score");
+    }
+
+    #[test]
+    fn file_frecency_key_is_case_insensitive() {
+        let db = Database::new_in_memory();
+        db.record_file_open(r"C:\Users\me\Report.txt");
+        assert!(db.file_frecency_score(r"c:\USERS\me\report.txt") > 0.0);
     }
 }

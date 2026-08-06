@@ -43,8 +43,9 @@ src/
 │                     # Hotkey parsing: parse_hotkey(), hotkey_fallback_candidates().
 │
 ├── database.rs       # SQLite via rusqlite (bundled). Mutex<Connection>.
-│                     # Tables: clipboard_entries, frecency.
-│                     # Methods: load_clipboard, record_launch, top_frecency, frecency_score.
+│                     # Tables: clipboard_entries, frecency, file_frecency.
+│                     # Methods: load_clipboard, record_launch, top_frecency, frecency_score,
+│                     #          record_file_open, file_frecency_score (case-insensitive keys).
 │                     # fn new_in_memory() for tests.
 │
 ├── error.rs          # ElementError (thiserror). Variants: Config, Database, Io, Icon,
@@ -83,10 +84,11 @@ src/
 │   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".
 │   │   └── mod.rs
 │   ├── files/        # Raycast-style file search. Runs on "file"/"folder" prefixes
-│   │   │             # AND on bare queries (≥2 chars, not emoji/clipboard/math
-│   │   │             # domains) so typing ".png" or "pvt" finds files directly.
+│   │                 # AND on bare queries (≥2 chars, not emoji/clipboard/math
+│   │                 # domains) so typing ".png" or "pvt" finds files directly.
 │   │   ├── mod.rs    #   FilesProvider: prefix/bare parsing, fuzzy match on names,
-│   │   │             #   lazy icons via revision loop, explorer.exe activation.
+│   │   │             #   frecency boost (≤2×, same decay as apps), lazy icons via
+│   │   │             #   revision loop, explorer.exe activation + record_file_open.
 │   │   │             #   Bare queries: score 10 + fuzzy×0.5, cap 6 (apps stay on
 │   │   │             #   top). Prefixed: 120 + fuzzy×2 (+10 folders), cap 30.
 │   │   │             #   Roots published synchronously at construction (bare
