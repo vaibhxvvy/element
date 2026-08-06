@@ -21,7 +21,9 @@ impl DebugLogger {
             .append(true)
             .open(&path)
             .ok()?;
-        Some(Self { file: Mutex::new(file) })
+        Some(Self {
+            file: Mutex::new(file),
+        })
     }
 
     fn write(&self, msg: &str) {

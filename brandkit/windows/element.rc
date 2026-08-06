@@ -15,11 +15,11 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName", "vaibhxvvy"
-            VALUE "FileDescription", "A fast local launcher and search tool for Windows"
+            VALUE "CompanyName", "tetracode"
+            VALUE "FileDescription", "A fast global-hotkey launcher and search tool for Windows"
             VALUE "FileVersion", "1.0.0.0"
             VALUE "InternalName", "element"
-            VALUE "LegalCopyright", "Copyright (c) 2024 vaibhxvvy"
+            VALUE "LegalCopyright", "Copyright (c) 2024 tetracode"
             VALUE "OriginalFilename", "element.exe"
             VALUE "ProductName", "Element"
             VALUE "ProductVersion", "1.0.0.0"

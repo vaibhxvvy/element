@@ -3,7 +3,7 @@
 
 #define MyAppName "Element"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "vaibhxvvy"
+#define MyAppPublisher "tetracode"
 #define MyAppURL "https://github.com/vaibhxvvy/element"
 #define MyAppExeName "element.exe"
 

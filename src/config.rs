@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub hotkey: String,
     pub window_width: f32,
@@ -10,6 +11,9 @@ pub struct Config {
     pub search_url: String,
     pub search_dirs: Vec<String>,
     pub clipboard_max_entries: u32,
+    /// Launch Element automatically when Windows starts.
+    /// Defaults to true; missing in older config.toml files.
+    pub autostart: bool,
 }
 
 impl Default for Config {
@@ -22,6 +26,7 @@ impl Default for Config {
             search_url: "https://duckduckgo.com/search?q=%s".into(),
             search_dirs: vec![],
             clipboard_max_entries: 100,
+            autostart: true,
         }
     }
 }
@@ -90,6 +95,61 @@ pub(crate) fn data_dir() -> PathBuf {
     }
 }
 
+/// RegisterHotKey modifier bits (without `MOD_NOREPEAT`).
+pub(crate) const MOD_ALT: u32 = 0x0001;
+pub(crate) const MOD_CONTROL: u32 = 0x0002;
+pub(crate) const MOD_SHIFT: u32 = 0x0004;
+pub(crate) const MOD_WIN: u32 = 0x0008;
+
+/// Parse `"Alt+Space"`, `"Ctrl+Shift+F"`, etc. into `(modifiers, virtual_key)`.
+pub(crate) fn parse_hotkey(s: &str) -> Option<(u32, u32)> {
+    let mut mods = 0u32;
+    let mut vk: Option<u32> = None;
+    for part in s.split('+').map(str::trim) {
+        if part.is_empty() {
+            return None;
+        }
+        match part.to_ascii_lowercase().as_str() {
+            "alt" | "menu" => mods |= MOD_ALT,
+            "ctrl" | "control" => mods |= MOD_CONTROL,
+            "shift" => mods |= MOD_SHIFT,
+            "win" | "super" | "meta" => mods |= MOD_WIN,
+            "space" => vk = Some(0x20),
+            other if other.len() == 1 => {
+                let c = other.chars().next()?.to_ascii_uppercase();
+                if c.is_ascii_alphanumeric() {
+                    vk = Some(c as u32);
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some((mods, vk?))
+}
+
+/// Preferred hotkey first, then common launcher alternatives.
+pub(crate) fn hotkey_fallback_candidates(preferred: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let push = |list: &mut Vec<String>, s: &str| {
+        if !list.iter().any(|x| x.eq_ignore_ascii_case(s)) {
+            list.push(s.to_string());
+        }
+    };
+    push(&mut out, preferred);
+    for c in [
+        "Alt+Space",
+        "Ctrl+Space",
+        "Alt+Shift+Space",
+        "Ctrl+Shift+Space",
+        "Ctrl+Alt+Space",
+    ] {
+        push(&mut out, c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +161,22 @@ mod tests {
         assert!(cfg.window_width > 0.0);
         assert!(cfg.debounce_delay_ms > 0);
         assert!(cfg.search_url.contains("%s"));
+        assert!(cfg.autostart);
+    }
+
+    #[test]
+    fn config_missing_autostart_defaults_true() {
+        let toml_str = r#"
+hotkey = "Alt+Space"
+window_width = 580.0
+window_height = 420.0
+debounce_delay_ms = 150
+search_url = "https://duckduckgo.com/search?q=%s"
+search_dirs = []
+clipboard_max_entries = 100
+"#;
+        let parsed: Config = toml::from_str(toml_str).unwrap();
+        assert!(parsed.autostart);
     }
 
     #[test]
@@ -140,5 +216,26 @@ mod tests {
     fn config_data_dir_exists() {
         let dir = data_dir();
         assert!(dir.to_string_lossy().contains(".element"));
+    }
+
+    #[test]
+    fn parse_hotkey_alt_space() {
+        let (mods, vk) = parse_hotkey("Alt+Space").unwrap();
+        assert_eq!(mods, MOD_ALT);
+        assert_eq!(vk, 0x20);
+    }
+
+    #[test]
+    fn parse_hotkey_ctrl_shift_f() {
+        let (mods, vk) = parse_hotkey("Ctrl+Shift+F").unwrap();
+        assert_eq!(mods, MOD_CONTROL | MOD_SHIFT);
+        assert_eq!(vk, b'F' as u32);
+    }
+
+    #[test]
+    fn hotkey_fallback_keeps_preferred_first() {
+        let list = hotkey_fallback_candidates("Ctrl+Space");
+        assert_eq!(list[0], "Ctrl+Space");
+        assert!(list.iter().any(|s| s == "Alt+Space"));
     }
 }

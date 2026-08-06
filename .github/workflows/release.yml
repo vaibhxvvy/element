@@ -21,24 +21,24 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress
+
       - name: Build release binary
         run: cargo build --release
 
-      - name: Package portable zip
+      - name: Build installer
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          $dir = "element-$version-win64"
-          New-Item -ItemType Directory -Path $dir -Force
-          Copy-Item target/release/element.exe $dir/
-          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" installer.iss
 
       - name: Generate checksums
         shell: pwsh
         run: |
-          $zip = Get-ChildItem element-*.zip | Select-Object -First 1
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-          $hash | Out-File -FilePath "$($zip.Name).sha256" -Encoding ascii
+          $setup = Get-ChildItem element-*-setup.exe | Select-Object -First 1
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          $hash | Out-File -FilePath "$($setup.Name).sha256" -Encoding ascii
           Write-Output "SHA256: $hash"
 
       - name: Create Release
@@ -47,7 +47,7 @@ jobs:
           name: Element ${{ github.ref_name }}
           body_path: CHANGELOG.md
           files: |
-            element-*.zip
+            element-*-setup.exe
             element-*.sha256
           draft: false
           prerelease: false
