@@ -1,11 +1,13 @@
-//! File & folder search provider — Raycast-style "file search" mode.
+//! File & folder search provider — Raycast-style file search.
 //!
-//! Prefix-gated so it never shadows normal app search:
-//! - `file <query>`  — search files and folders
+//! - `file <query>`  — search files and folders (explicit mode)
 //! - `folder <query>` — folders only
+//! - any other query — also fuzzy-matches file names (bare mode), scored
+//!   lower and capped tighter so app search stays dominant; queries owned by
+//!   other providers (emoji `:…`, clipboard `cbhist`/`clip`, math) are skipped.
 //!
-//! A background thread indexes the configured directories (default: the user
-//! home folder) with sensible exclusions and caps. Results are fuzzy-matched
+//! A background thread indexes the configured directories (default: curated
+//! user folders) with sensible exclusions and caps. Results are fuzzy-matched
 //! by name; icons are extracted lazily on a worker thread and published
 //! through the provider revision, so the UI re-renders them without ever
 //! blocking the UI thread on COM.
@@ -23,8 +25,11 @@ use super::icon::{cached_icon_for_path, icon_cache_dir};
 
 mod scan;
 
-/// Maximum results returned per query.
+/// Maximum results returned per prefixed query.
 const MAX_RESULTS: usize = 30;
+/// Maximum results returned for a bare (non-prefixed) query — keep file
+/// matches from flooding normal app search.
+const BARE_RESULTS: usize = 6;
 /// How many results look ahead for icon extraction.
 const ICON_LOOKAHEAD: usize = 12;
 
@@ -64,6 +69,50 @@ fn parse_prefix(query: &str) -> Option<(SearchMode, String)> {
     };
     let term = q[prefix.len()..].trim().to_string();
     Some((mode, term))
+}
+
+/// A parsed file-search request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedQuery {
+    mode: SearchMode,
+    term: String,
+    /// True for bare queries (no `file`/`folder` prefix). Bare matches are
+    /// scored lower and capped tighter so normal app search stays dominant.
+    bare: bool,
+}
+
+/// Parse any query into a file search. Explicit `file`/`folder` prefixes set
+/// the mode; every other query (≥ 2 chars and not another provider's domain)
+/// also searches files — Raycast-style bare file search.
+fn parse_query(query: &str) -> Option<ParsedQuery> {
+    if let Some((mode, term)) = parse_prefix(query) {
+        return Some(ParsedQuery {
+            mode,
+            term,
+            bare: false,
+        });
+    }
+    let term = query.trim().to_lowercase();
+    if term.len() < 2 || is_other_domain(&term) {
+        return None;
+    }
+    Some(ParsedQuery {
+        mode: SearchMode::Any,
+        term,
+        bare: true,
+    })
+}
+
+/// Queries owned by other providers shouldn't also fuzzy-match file names:
+/// emoji (`:…`, `emoji`), clipboard history (`cbhist`, `clip`) and math
+/// expressions (digits + an operator).
+fn is_other_domain(query: &str) -> bool {
+    query.starts_with(':')
+        || query.starts_with("emoji")
+        || query.starts_with("cbhist")
+        || query.starts_with("clip")
+        || (query.chars().any(|c| "+-*/%^=".contains(c))
+            && query.chars().any(|c| c.is_ascii_digit()))
 }
 
 pub struct FilesProvider {
@@ -257,16 +306,16 @@ impl SearchProvider for FilesProvider {
     }
 
     fn should_run(&self, query: &str) -> bool {
-        parse_prefix(query).is_some()
+        parse_query(query).is_some()
     }
 
     fn search(&self, _ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
-        let Some((mode, term)) = parse_prefix(query) else {
+        let Some(pq) = parse_query(query) else {
             return Vec::new();
         };
 
-        let mut results = if term.is_empty() {
-            self.recommendations(mode)
+        let mut results = if pq.term.is_empty() {
+            self.recommendations(pq.mode)
         } else if self.first_scan_in_progress() {
             // No index yet — show a placeholder instead of a silent empty list.
             vec![Self::indexing_hint()]
@@ -274,13 +323,21 @@ impl SearchProvider for FilesProvider {
             let Ok(entries) = self.entries.lock() else {
                 return Vec::new();
             };
+            // Bare queries score lower and cap tighter so app results stay
+            // on top; explicit `file`/`folder` queries rank higher.
+            let (base, per_char, folder_bonus, cap) = if pq.bare {
+                (10.0, 0.5, 5.0, BARE_RESULTS)
+            } else {
+                (120.0, 2.0, 10.0, MAX_RESULTS)
+            };
             let mut results: Vec<SearchResult> = Vec::new();
             for entry in entries.iter() {
-                if mode == SearchMode::FoldersOnly && !entry.is_dir {
+                if pq.mode == SearchMode::FoldersOnly && !entry.is_dir {
                     continue;
                 }
-                if let Some(score) = fuzzy_score(&term, &entry.name) {
-                    let score = 120.0 + score * 2.0 + if entry.is_dir { 10.0 } else { 0.0 };
+                if let Some(score) = fuzzy_score(&pq.term, &entry.name) {
+                    let score =
+                        base + score * per_char + if entry.is_dir { folder_bonus } else { 0.0 };
                     results.push(Self::result_for(entry, score));
                 }
             }
@@ -290,7 +347,7 @@ impl SearchProvider for FilesProvider {
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then_with(|| a.title.cmp(&b.title))
             });
-            results.truncate(MAX_RESULTS);
+            results.truncate(cap);
             results
         };
 
@@ -410,6 +467,86 @@ mod tests {
         assert_eq!(parse_prefix("f"), None);
         assert_eq!(parse_prefix("filex"), None);
         assert_eq!(parse_prefix(""), None);
+    }
+
+    #[test]
+    fn bare_queries_search_files_too() {
+        let q = parse_query("firefox").unwrap();
+        assert!(q.bare);
+        assert_eq!(q.mode, SearchMode::Any);
+        assert_eq!(q.term, "firefox");
+
+        let q = parse_query(".png").unwrap();
+        assert!(q.bare);
+        assert_eq!(q.term, ".png");
+
+        let q = parse_query("pvt").unwrap();
+        assert!(q.bare);
+        assert_eq!(q.term, "pvt");
+    }
+
+    #[test]
+    fn prefixed_queries_are_not_bare() {
+        let q = parse_query("file report").unwrap();
+        assert!(!q.bare);
+        assert_eq!(q.mode, SearchMode::Any);
+        assert_eq!(q.term, "report");
+
+        let q = parse_query("folder docs").unwrap();
+        assert!(!q.bare);
+        assert_eq!(q.mode, SearchMode::FoldersOnly);
+        assert_eq!(q.term, "docs");
+    }
+
+    #[test]
+    fn bare_queries_skip_short_and_other_domains() {
+        assert!(parse_query("f").is_none());
+        assert!(parse_query("").is_none());
+        assert!(parse_query(":smile").is_none());
+        assert!(parse_query("emoji").is_none());
+        assert!(parse_query("cbhist").is_none());
+        assert!(parse_query("clip").is_none());
+        assert!(parse_query("2+2").is_none());
+        // Spelled-out math still searches files.
+        assert!(parse_query("two plus two").is_some());
+    }
+
+    #[test]
+    fn bare_search_scores_low_and_caps_tight() {
+        let mut entries = Vec::new();
+        for i in 0..10 {
+            entries.push(FileEntry {
+                name: format!("report_{i}.txt"),
+                path: format!(r"C:\Users\me\Documents\report_{i}.txt"),
+                is_dir: false,
+            });
+        }
+        let provider = FilesProvider {
+            entries: Arc::new(Mutex::new(entries)),
+            icons: Arc::new(Mutex::new(HashMap::new())),
+            search_dirs: Vec::new(),
+            roots: Arc::new(Mutex::new(Vec::new())),
+            refresh_in_progress: Arc::new(AtomicBool::new(false)),
+            icon_worker_busy: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+        };
+        let config = crate::config::Config::default();
+        let db = crate::database::Database::new_in_memory();
+        let ctx = SearchContext {
+            config: &config,
+            db: &db,
+        };
+
+        // Bare query: capped at 6, all below the prefixed score floor (120).
+        let results = provider.search(&ctx, "report");
+        assert_eq!(results.len(), BARE_RESULTS);
+        assert!(results.iter().all(|r| r.provider_id == "files"));
+        assert!(results.iter().all(|r| r.score < 120.0));
+
+        // Same query with the explicit prefix: 10 results, high scoring.
+        let results = provider.search(&ctx, "file report");
+        assert_eq!(results.len(), 10);
+        assert!(results.iter().all(|r| r.score >= 120.0));
     }
 
     #[test]

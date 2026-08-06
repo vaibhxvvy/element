@@ -78,9 +78,13 @@ src/
 │   │   └── mod.rs
 │   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".
 │   │   └── mod.rs
-│   ├── files/        # Raycast-style file search. should_run: "file"/"folder" prefixes.
-│   │   ├── mod.rs    #   FilesProvider: prefix parsing, fuzzy match on names,
+│   ├── files/        # Raycast-style file search. Runs on "file"/"folder" prefixes
+│   │   │             # AND on bare queries (≥2 chars, not emoji/clipboard/math
+│   │   │             # domains) so typing ".png" or "pvt" finds files directly.
+│   │   ├── mod.rs    #   FilesProvider: prefix/bare parsing, fuzzy match on names,
 │   │   │             #   lazy icons via revision loop, explorer.exe activation.
+│   │   │             #   Bare queries: score 10 + fuzzy×0.5, cap 6 (apps stay on
+│   │   │             #   top). Prefixed: 120 + fuzzy×2 (+10 folders), cap 30.
 │   │   │             #   Roots published synchronously at construction (bare
 │   │   │             #   `file` shows Desktop/Documents/... instantly); an
 │   │   │             #   "Indexing your files…" hint fills the gap while the
@@ -150,7 +154,8 @@ Use scores strategically:
 - Emoji: 500 - index (decaying, up to 20)
 - Apps: fuzzy_score × frecency_boost (0–~200)
 - Clipboard: 200
-- Files: 120 + fuzzy_score × 2 (+10 for folders); recommendations 190–200
+- Files: 120 + fuzzy_score × 2 (+10 for folders); recommendations 210 (scan roots)
+- Files bare (no `file`/`folder` prefix): 10 + fuzzy_score × 0.5 (+5 for folders), cap 6 — apps stay on top
 - Web search: -1 (always last)
 
 ## Key Design Decisions
@@ -278,7 +283,7 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 46 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
+cargo test               # 50 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```

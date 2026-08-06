@@ -103,7 +103,7 @@ Search results are scored and sorted descending:
 | Emoji | 500 - index (decaying, up to 20) |
 | Apps | fuzzy_score × frecency_boost |
 | Clipboard | 200 |
-| Files | 120 + fuzzy × 2 (+10 folders); recs 190–200 |
+| Files | 120 + fuzzy × 2 (+10 folders); recs 210 (roots); bare queries 10 + fuzzy × 0.5, cap 6 |
 | Web search | -1 (always last) |
 
 The `ProviderRegistry` wraps each call in `catch_unwind` — a buggy provider never crashes the overlay.

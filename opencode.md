@@ -84,11 +84,27 @@ Changes:
   window hidden (`toggle_launcher(from_tray: bool)`; hotkey toggles unaffected).
 - Faster poll (10 ms) while the launcher is visible.
 
+### Bare file search (3rd report — "can't see .png / pvt / qt")
+
+Diagnostic on the real machine proved the prefix path works (`file pvt` →
+30, `file .png` → 30, `file qt` → 30). The user was typing bare queries
+(`.png`, `pvt`, `qt`) which only hit apps + websearch — prefix requirement
+was invisible. Changed to Raycast-style bare file search:
+
+- `parse_query()`: bare queries (≥2 chars, not another provider's domain)
+  also fuzzy-match file names; `file`/`folder` prefixes still set mode.
+- `is_other_domain()` skips emoji (`:`/`emoji`), clipboard (`cbhist`/`clip`)
+  and math expressions (digit + operator) so other providers keep ownership.
+- Bare band: score `10 + fuzzy×0.5` (+5 folders), cap 6 → app results stay
+  on top; prefixed band unchanged (`120 + fuzzy×2`, cap 30).
+- 50 tests (4 new: bare parsing, prefixed-not-bare, domain exclusions,
+  bare score band + cap).
+
 ### Verification
 
 ```bash
 cargo check               # clean
-cargo test                # 46 tests, all pass (15 new: prefix parsing, folder mode, exclusions, hint)
+cargo test                # 50 tests, all pass (19 new: prefix parsing, folder mode, exclusions, hint, bare)
 cargo clippy -- -D warnings  # clean
 cargo fmt                 # clean
 ```
