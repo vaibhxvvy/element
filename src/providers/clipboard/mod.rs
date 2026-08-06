@@ -24,7 +24,7 @@ impl SearchProvider for ClipboardProvider {
         let entries = ctx.db.load_clipboard(limit);
         entries
             .into_iter()
-            .map(|(text, ts)| {
+            .map(|(text, ts, pinned)| {
                 let preview: String = text
                     .lines()
                     .next()
@@ -33,8 +33,16 @@ impl SearchProvider for ClipboardProvider {
                     .take(80)
                     .collect();
                 SearchResult {
-                    title: preview,
-                    subtitle: format!("Clipboard \u{00b7} {}", ts),
+                    title: if pinned {
+                        format!("\u{1f4cc} {}", preview)
+                    } else {
+                        preview
+                    },
+                    subtitle: format!(
+                        "Clipboard \u{00b7} {}{}",
+                        ts,
+                        if pinned { " \u{00b7} pinned" } else { "" }
+                    ),
                     kind: "clipboard".into(),
                     provider_id: "clipboard".into(),
                     action: text,

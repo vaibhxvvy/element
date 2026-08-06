@@ -6,8 +6,9 @@ Read it first before making any changes.
 ## Project Overview
 
 Element is a **global-hotkey launcher for Windows** — press `Alt+Space` for a floating
-search bar. Type to fuzzy-find apps, calculate math, search emoji, browse clipboard
-history, or search the web. Built in Rust with Iced 0.13 (wgpu).
+search bar. Type to fuzzy-find apps and files, calculate math, search emoji, browse
+clipboard history, run system commands, or search the web. Built in Rust with
+Iced 0.13 (wgpu).
 
 Runs in the system tray. Zero UI until summoned.
 
@@ -21,6 +22,8 @@ src/
 │                     #   Single-instance: named mutex guard
 │                     # Tray: hidden message-only window, left-click toggle, right-click Exit
 │                     # Window: PID-based EnumWindows (not FindWindowW)
+│                     # Clipboard watcher: "element-clipboard" thread polls every
+│                     #   800 ms → db.save_clipboard (dedupe + trim)
 │                     # Atomics: HOTKEY_TRIGGERED, HIDE_REQUESTED, EXIT_REQUESTED,
 │                     #          RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH,
 │                     #          WINDOW_FOUND, LAUNCHER_SHOWN, LAST_TOGGLE_MS,
@@ -43,9 +46,13 @@ src/
 │                     # Hotkey parsing: parse_hotkey(), hotkey_fallback_candidates().
 │
 ├── database.rs       # SQLite via rusqlite (bundled). Mutex<Connection>.
-│                     # Tables: clipboard_entries, frecency, file_frecency.
-│                     # Methods: load_clipboard, record_launch, top_frecency, frecency_score,
-│                     #          record_file_open, file_frecency_score (case-insensitive keys).
+│                     # Tables: clipboard_entries (pinned flag), emoji_frecency,
+│                     #          frecency, file_frecency.
+│                     # Methods: load_clipboard, save_clipboard (dedupe/trim),
+│                     #          toggle_clipboard_pinned, record_emoji_use,
+│                     #          emoji_frecency_score, record_launch, top_frecency,
+│                     #          frecency_score, record_file_open,
+│                     #          file_frecency_score (case-insensitive keys).
 │                     # fn new_in_memory() for tests.
 │
 ├── error.rs          # ElementError (thiserror). Variants: Config, Database, Io, Icon,
@@ -80,9 +87,14 @@ src/
 │   ├── settings/     # "settings" → opens the in-launcher settings panel
 │   │   └── mod.rs    #   (UI intercepts kind=="settings"; width/URL/accent/autostart).
 │   ├── emoji/        # emojis crate. should_run: starts with "emoji" or ":".
-│   │   └── mod.rs
+│   │   └── mod.rs    #   Frecency boost (≤2×) from emoji_frecency table; activate
+│   │                 #   records usage via record_emoji_use.
 │   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".
-│   │   └── mod.rs
+│   │   └── mod.rs    #   Pinned rows sort first and show 📌 ("· pinned" subtitle).
+│   ├── system/       # System commands. should_run: shutdown/restart/reboot(alias)/
+│   │   └── mod.rs    #   sleep/lock at query start (word boundary, case-insensitive).
+│   │                 #   Score 300, priority 9. shutdown.exe for off/restart;
+│   │                 #   platform::lock_workstation / suspend_system for lock/sleep.
 │   ├── files/        # Raycast-style file search. Runs on "file"/"folder" prefixes
 │   │                 # AND on bare queries (≥2 chars, not emoji/clipboard/math
 │   │                 # domains) so typing ".png" or "pvt" finds files directly.
@@ -101,12 +113,18 @@ src/
 │   │                 #   Documents/...): junk exclusions, depth/entry caps
 │   │                 #   from config (file_index_depth / file_index_entries).
 │   └── websearch/    # webbrowser + config.search_url. Always runs, score=-1 (bottom).
-│       └── mod.rs
+│       └── mod.rs    #   Per-site shortcuts: `yt cats` → 800 (search_prefixes map
+│                     #   in config, `%s` template; defaults yt/gh/w).
+│
+├── platform.rs       # Win32 helpers behind safe wrappers: copy_files_to_clipboard
+│                     # (CF_HDROP), lock_workstation, suspend_system.
 │
 └── ui/
     └── mod.rs        # Iced views. Search TextInput, scrollable results list,
-                      # status row for activation feedback. Sends Request to the
-                      # Orchestrator via engine.handle(Request) and matches Outcome.
+                      # status row for activation feedback, contextual hint row
+                      # (files: Alt+C/F/Enter; clipboard: right-click to pin).
+                      # Sends Request to the Orchestrator via engine.handle(Request)
+                      # and matches Outcome.
 ```
 
 ## Provider System
@@ -161,9 +179,11 @@ alphabetically). Priority is **not** currently used in sort, only as future tieb
 Use scores strategically:
 - Calculator: 1000 (always on top when matched)
 - Units: 900
-- Emoji: 500 - index (decaying, up to 20)
+- Web prefix shortcuts (`yt …`): 800 (explicit intent)
+- Emoji: 500 - index (decaying, up to 20) × frecency boost
 - Apps: fuzzy_score × frecency_boost (0–~200)
 - Clipboard: 200
+- System commands: 300 (priority 9)
 - Files: 120 + fuzzy_score × 2 (+10 for folders); recommendations 210 (scan roots)
 - Files bare (no `file`/`folder` prefix): 10 + fuzzy_score × 0.5 (+5 for folders), cap 6 — apps stay on top
 - Web search: -1 (always last)
@@ -188,7 +208,16 @@ handles WM_APP (left-click toggle, right-click menu) and WM_COMMAND (Exit).
 when activation feedback is visible; it is capped at 500, min 56.
 The result is stored in `RESIZE_HEIGHT` atomic and `RESIZE_REQUESTED` is set. The
 background thread reads both and calls `SetWindowPos`. This avoids Iced needing to
-know about Win32 window management.
+know about Win32 window management. The hint row shares the status slot — the status
+row wins when both would be visible.
+
+### Clipboard watcher thread
+
+A background thread ("element-clipboard") polls the clipboard every 800 ms and calls
+`db.save_clipboard(&text, keep)` when the text changed (dedupe, trim to
+`config.clipboard_max_entries`). History rows can be pinned via right-click;
+`toggle_clipboard_pinned` flips all rows with that text, pinned rows sort first and
+survive trimming. Emoji usage is tracked the same way via `record_emoji_use`.
 
 ### WINDOW_WIDTH atomic
 
@@ -293,7 +322,7 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 50 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard, files, URL encoding)
+cargo test               # 72 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard pinning/dedupe, emoji frecency, system commands, files, URL encoding, web prefixes)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```
@@ -303,6 +332,8 @@ cargo clippy -- -D warnings   # lint (blocking on CI)
 Window and tray FFI lives in `main.rs`. Shortcut resolution stays isolated in
 `providers/apps/icons.rs`; generic icon extraction (`IShellItemImageFactory`)
 lives in `providers/icon.rs`, where COM is initialized only for the helper call.
+Simple Win32 helpers (clipboard file copy via CF_HDROP, lock workstation,
+suspend system) live in `src/platform.rs` behind safe wrappers.
 
 Do not scatter `#[cfg(target_os = "windows")]` through providers or UI code.
 If a provider needs platform-specific logic, isolate it behind a helper.

@@ -7,6 +7,7 @@ mod debug_log;
 mod error;
 mod hotkey;
 mod orchestrator;
+mod platform;
 mod providers;
 mod registry;
 pub(crate) mod theme;
@@ -1083,6 +1084,31 @@ pub fn main() -> iced::Result {
         .subscription(ui::subscription)
         .run_with(move || {
             let db = Arc::new(Database::new());
+            // Background clipboard watcher: polls every ~800 ms and records
+            // changes into the history (deduped, trimmed to the configured cap).
+            let watcher_db = Arc::clone(&db);
+            let clip_keep = config.clipboard_max_entries.max(1) as usize;
+            std::thread::Builder::new()
+                .name("element-clipboard".into())
+                .spawn(move || {
+                    let mut clipboard = arboard::Clipboard::new().ok();
+                    let mut last: Option<String> = None;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        if EXIT_REQUESTED.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let Ok(Some(text)) = clipboard.as_mut().map(|c| c.get_text()).transpose()
+                        else {
+                            continue;
+                        };
+                        if last.as_deref() != Some(text.as_str()) {
+                            last = Some(text.clone());
+                            watcher_db.save_clipboard(&text, clip_keep);
+                        }
+                    }
+                })
+                .ok();
             let engine = Orchestrator::new(config, db);
             let startup_config = engine.config.clone();
             debug_log!("Iced application started – Orchestrator initialized");
@@ -1093,6 +1119,7 @@ pub fn main() -> iced::Result {
                     results: Vec::new(),
                     selected_index: -1,
                     status: None,
+                    hint: None,
                     search_revision: 0,
                     mode: ui::Mode::Search,
                     settings: ui::SettingsDraft {

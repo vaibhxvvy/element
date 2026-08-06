@@ -19,6 +19,10 @@ impl SearchProvider for WebSearchProvider {
     }
 
     fn search(&self, ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
+        // Per-site shortcut: `yt cats`, `gh element`, ...
+        if let Some(result) = prefix_search(ctx, query) {
+            return vec![result];
+        }
         let url = config_or_default(&ctx.config.search_url, "https://duckduckgo.com/search?q=%s");
         let search_url = url.replace("%s", &encode_query(query));
         vec![SearchResult {
@@ -46,6 +50,58 @@ fn config_or_default(config: &str, default: &str) -> String {
     }
 }
 
+/// `yt cats` → a high-ranking result for the configured YouTube template.
+/// Scores well above the plain web-search row (800 vs −1) because the prefix
+/// is an explicit intent, not a fallback.
+fn prefix_search(ctx: &SearchContext, query: &str) -> Option<SearchResult> {
+    let (prefix, rest) = query.trim().split_once(char::is_whitespace)?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let template = ctx.config.search_prefixes.get(&prefix.to_lowercase())?;
+    let site = site_name(template);
+    Some(SearchResult {
+        title: format!("Search {} for \"{}\"", site, rest),
+        subtitle: "Open in your browser".into(),
+        kind: "websearch".into(),
+        provider_id: "websearch".into(),
+        action: template.replace("%s", &encode_query(rest)),
+        icon_rgba: None,
+        score: 800.0,
+    })
+}
+
+/// "https://www.youtube.com/..." → "YouTube" (best effort; falls back to the
+/// configured prefix key if the host can't be derived).
+fn site_name(template: &str) -> String {
+    let host = template
+        .split("://")
+        .nth(1)
+        .unwrap_or(template)
+        .split('/')
+        .next()
+        .unwrap_or(template);
+    let name = host
+        .strip_prefix("www.")
+        .unwrap_or(host)
+        .split('.')
+        .next()
+        .unwrap_or(host);
+    match name {
+        "youtube" => "YouTube".into(),
+        "github" => "GitHub".into(),
+        "wikipedia" => "Wikipedia".into(),
+        _ => {
+            let mut chars = name.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => host.to_string(),
+            }
+        }
+    }
+}
+
 fn encode_query(query: &str) -> String {
     let mut encoded = String::with_capacity(query.len());
     for byte in query.bytes() {
@@ -61,11 +117,64 @@ fn encode_query(query: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_query;
+    use super::*;
+    use crate::config::Config;
+    use crate::database::Database;
 
     #[test]
     fn encodes_query_for_url_substitution() {
         assert_eq!(encode_query("cats & dogs"), "cats%20%26%20dogs");
         assert_eq!(encode_query("a/b?c=d"), "a%2Fb%3Fc%3Dd");
+    }
+
+    #[test]
+    fn prefix_query_builds_site_url() {
+        let config = Config::default();
+        let db = Database::new_in_memory();
+        let context = SearchContext {
+            config: &config,
+            db: &db,
+        };
+        let provider = WebSearchProvider;
+        let results = provider.search(&context, "yt cats & dogs");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Search YouTube for \"cats & dogs\"");
+        assert_eq!(
+            results[0].action,
+            "https://www.youtube.com/results?search_query=cats%20%26%20dogs"
+        );
+        assert_eq!(results[0].score, 800.0);
+    }
+
+    #[test]
+    fn prefix_case_insensitive_and_requires_term() {
+        let config = Config::default();
+        let db = Database::new_in_memory();
+        let context = SearchContext {
+            config: &config,
+            db: &db,
+        };
+        let provider = WebSearchProvider;
+
+        let results = provider.search(&context, "GH element");
+        assert_eq!(results[0].title, "Search GitHub for \"element\"");
+
+        // Prefix alone (no term) falls through to the plain web search.
+        let results = provider.search(&context, "yt");
+        assert_eq!(results[0].title, "Search web for \"yt\"");
+        assert_eq!(results[0].score, -1.0);
+    }
+
+    #[test]
+    fn unknown_prefix_falls_through() {
+        let config = Config::default();
+        let db = Database::new_in_memory();
+        let context = SearchContext {
+            config: &config,
+            db: &db,
+        };
+        let provider = WebSearchProvider;
+        let results = provider.search(&context, "zzz something");
+        assert_eq!(results[0].title, "Search web for \"zzz something\"");
     }
 }

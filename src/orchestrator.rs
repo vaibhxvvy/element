@@ -29,6 +29,21 @@ pub enum Request {
     Refresh,
     /// Change the file-index scan limits (depth, entry cap) and re-index.
     UpdateFileIndex { depth: usize, entries: usize },
+    /// Toggle the pinned state of a clipboard entry.
+    PinClipboard(String),
+    /// Run a secondary action on a file/folder path.
+    FileAction { path: String, action: FileAction },
+}
+
+/// Secondary actions for a file result (not the default open).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAction {
+    /// Copy the path as plain text.
+    CopyPath,
+    /// Copy the file itself (CF_HDROP — paste into Explorer).
+    CopyFile,
+    /// Open the file's folder in Explorer with the file selected.
+    Reveal,
 }
 
 /// The outcome of performing a [`Request`].
@@ -40,6 +55,8 @@ pub enum Outcome {
     Activated(Result<(), ElementError>),
     /// Result of a [`Request::Refresh`]: the new provider data revision.
     Refreshed(u64),
+    /// Result of [`Request::PinClipboard`]: the new pinned state.
+    Pinned(bool),
 }
 
 /// Owns the config, database, and provider registry; routes requests to them.
@@ -66,6 +83,7 @@ impl Orchestrator {
         registry.add(Box::new(crate::providers::websearch::WebSearchProvider));
         registry.add(Box::new(crate::providers::units::UnitsProvider));
         registry.add(Box::new(crate::providers::settings::SettingsProvider));
+        registry.add(Box::new(crate::providers::system::SystemProvider));
 
         Self {
             config,
@@ -88,6 +106,27 @@ impl Orchestrator {
                 self.registry.update_file_limits(depth, entries);
                 Outcome::Refreshed(self.revision())
             }
+            Request::PinClipboard(text) => Outcome::Pinned(self.db.toggle_clipboard_pinned(&text)),
+            Request::FileAction { path, action } => {
+                Outcome::Activated(self.file_action(&path, action))
+            }
+        }
+    }
+
+    /// Run a secondary file action (copy path, copy file, reveal).
+    fn file_action(&self, path: &str, action: FileAction) -> Result<(), ElementError> {
+        match action {
+            FileAction::CopyPath => arboard::Clipboard::new()
+                .and_then(|mut c| c.set_text(path))
+                .map_err(|e| ElementError::Other(format!("clipboard error: {:?}", e))),
+            FileAction::CopyFile => crate::platform::copy_files_to_clipboard(&[path.to_string()])
+                .map_err(ElementError::Other),
+            FileAction::Reveal => std::process::Command::new("explorer.exe")
+                .arg("/select,")
+                .arg(path)
+                .spawn()
+                .map(|_| ())
+                .map_err(ElementError::Io),
         }
     }
 

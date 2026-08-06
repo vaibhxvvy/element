@@ -66,6 +66,7 @@ fn draft_from_config(cfg: &Config) -> SettingsDraft {
 pub enum Message {
     InputChanged(String),
     ResultClicked(usize),
+    ResultRightClick(usize),
     Submit,
     KeyPressed(Key, Modifiers),
     Tick,
@@ -85,6 +86,8 @@ pub struct ElementApp {
     pub results: Vec<SearchResult>,
     pub selected_index: i32,
     pub status: Option<String>,
+    /// Contextual action hint for the selected result (files/clipboard).
+    pub hint: Option<String>,
     pub search_revision: u64,
     pub mode: Mode,
     pub settings: SettingsDraft,
@@ -110,12 +113,87 @@ fn update_window_height(results: &[SearchResult], has_status: bool) {
 fn search(app: &mut ElementApp, query: &str) -> iced::Task<Message> {
     app.results = match app.engine.handle(Request::Search(query.to_string())) {
         Outcome::Results(results) => results,
-        Outcome::Activated(_) | Outcome::Refreshed(_) => Vec::new(),
+        Outcome::Activated(_) | Outcome::Refreshed(_) | Outcome::Pinned(_) => Vec::new(),
     };
     app.selected_index = if app.results.is_empty() { -1 } else { 0 };
     app.search_revision = app.engine.revision();
-    update_window_height(&app.results, app.status.is_some());
+    refresh_hint(app);
+    update_window_height(&app.results, app.status.is_some() || app.hint.is_some());
     scroll_to_selected(app.selected_index)
+}
+
+/// Contextual hint for the selected result — shows available file actions or
+/// the clipboard pin affordance. Cleared by a status message (status wins).
+fn refresh_hint(app: &mut ElementApp) {
+    app.hint = app
+        .results
+        .get(app.selected_index.max(0) as usize)
+        .and_then(|r| match r.provider_id.as_str() {
+            "files" => {
+                Some("Enter open  ·  Alt+C copy path  ·  Alt+F copy file  ·  Alt+Enter reveal")
+            }
+            "clipboard" => Some("Enter copy  ·  Right-click to pin"),
+            _ => None,
+        })
+        .map(str::to_string);
+}
+
+/// Toggle pin on a clipboard entry via the orchestrator, then refresh.
+fn pin_clipboard(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
+    let Some(result) = app.results.get(index).cloned() else {
+        return iced::Task::none();
+    };
+    match app
+        .engine
+        .handle(Request::PinClipboard(result.action.clone()))
+    {
+        Outcome::Pinned(pinned) => {
+            app.status = Some(if pinned {
+                "Pinned — stays in history".into()
+            } else {
+                "Unpinned".into()
+            });
+            app.hint = None;
+            let query = app.input.clone();
+            search(app, &query)
+        }
+        _ => iced::Task::none(),
+    }
+}
+
+/// Run a secondary file action on the selected file result.
+fn run_file_action(
+    app: &mut ElementApp,
+    action: crate::orchestrator::FileAction,
+) -> iced::Task<Message> {
+    let Some(result) = app.results.get(app.selected_index.max(0) as usize).cloned() else {
+        return iced::Task::none();
+    };
+    if result.provider_id != "files" {
+        return iced::Task::none();
+    }
+    match app.engine.handle(Request::FileAction {
+        path: result.action,
+        action,
+    }) {
+        Outcome::Activated(Ok(())) => {
+            use crate::orchestrator::FileAction as A;
+            app.status = Some(
+                match action {
+                    A::CopyPath => "Path copied to clipboard",
+                    A::CopyFile => "File copied to clipboard",
+                    A::Reveal => "Opened in Explorer",
+                }
+                .into(),
+            );
+        }
+        Outcome::Activated(Err(error)) => {
+            app.status = Some(format!("Could not: {error}"));
+        }
+        _ => {}
+    }
+    update_window_height(&app.results, true);
+    iced::Task::none()
 }
 
 fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
@@ -133,15 +211,17 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
             if matches!(result.kind.as_str(), "calc" | "emoji" | "clipboard") =>
         {
             app.status = Some("Copied to clipboard".into());
+            app.hint = None;
             update_window_height(&app.results, true);
         }
         Outcome::Activated(Ok(())) => HIDE_REQUESTED.store(true, Ordering::SeqCst),
         Outcome::Activated(Err(error)) => {
             eprintln!("[element] failed to activate '{}': {error}", result.title);
             app.status = Some(format!("Could not open {}", result.title));
+            app.hint = None;
             update_window_height(&app.results, true);
         }
-        Outcome::Results(_) | Outcome::Refreshed(_) => {}
+        Outcome::Results(_) | Outcome::Refreshed(_) | Outcome::Pinned(_) => {}
     }
 
     iced::Task::none()
@@ -151,6 +231,7 @@ fn open_settings(app: &mut ElementApp) {
     debug_log!("UI: opening settings panel");
     app.mode = Mode::Settings;
     app.status = None;
+    app.hint = None;
     app.settings = draft_from_config(&app.engine.config);
     RESIZE_HEIGHT.store(SETTINGS_WINDOW_HEIGHT as u32, Ordering::Relaxed);
     RESIZE_REQUESTED.store(true, Ordering::SeqCst);
@@ -183,6 +264,7 @@ fn leave_settings(app: &mut ElementApp) -> iced::Task<Message> {
     app.mode = Mode::Search;
     app.input.clear();
     app.status = None;
+    app.hint = None;
     let search_task = search(app, "");
     iced::Task::batch(vec![text_input::focus("search"), search_task])
 }
@@ -248,6 +330,31 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
             return search(app, &text);
         }
         Message::ResultClicked(index) => return activate_result(app, index),
+        Message::ResultRightClick(index) => {
+            let Some(result) = app.results.get(index).cloned() else {
+                return iced::Task::none();
+            };
+            if result.provider_id == "clipboard" {
+                return pin_clipboard(app, index);
+            }
+            if result.provider_id == "files" {
+                match app.engine.handle(Request::FileAction {
+                    path: result.action,
+                    action: crate::orchestrator::FileAction::CopyPath,
+                }) {
+                    Outcome::Activated(Ok(())) => {
+                        app.status = Some("Path copied to clipboard".into())
+                    }
+                    Outcome::Activated(Err(error)) => {
+                        app.status = Some(format!("Could not: {error}"))
+                    }
+                    _ => {}
+                }
+                app.hint = None;
+                update_window_height(&app.results, true);
+            }
+            return iced::Task::none();
+        }
         Message::Submit => {
             if app.mode == Mode::Search && app.selected_index >= 0 {
                 return activate_result(app, app.selected_index as usize);
@@ -283,6 +390,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                         app.selected_index - 1
                     };
                 }
+                refresh_hint(app);
                 scroll_to_selected(app.selected_index)
             };
             match key {
@@ -291,6 +399,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                     debug_log!("UI: Escape – hiding launcher");
                     app.input.clear();
                     app.status = None;
+                    app.hint = None;
                     HIDE_REQUESTED.store(true, Ordering::SeqCst);
                 }
                 Key::Named(key::Named::ArrowUp) => return move_selection(app, -1),
@@ -301,10 +410,22 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 Key::Character(character) if ctrl && (character == "n") => {
                     return move_selection(app, 1);
                 }
+                // File result actions — Alt combos avoid the text input's own
+                // Ctrl+C/X/V handling.
+                Key::Named(key::Named::Enter) if mods.alt() => {
+                    return run_file_action(app, crate::orchestrator::FileAction::Reveal);
+                }
+                Key::Character(character) if mods.alt() && character == "c" => {
+                    return run_file_action(app, crate::orchestrator::FileAction::CopyPath);
+                }
+                Key::Character(character) if mods.alt() && character == "f" => {
+                    return run_file_action(app, crate::orchestrator::FileAction::CopyFile);
+                }
                 Key::Character(character) if ctrl && !mods.shift() => {
                     if let Ok(number) = character.parse::<usize>() {
                         if (1..=9).contains(&number) && number <= app.results.len() {
                             app.selected_index = number as i32 - 1;
+                            refresh_hint(app);
                             return scroll_to_selected(app.selected_index);
                         }
                     }
@@ -324,6 +445,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 }
                 app.input.clear();
                 app.status = None;
+                app.hint = None;
                 let search_task = search(app, "");
                 return iced::Task::batch(vec![text_input::focus("search"), search_task]);
             }
@@ -373,6 +495,16 @@ pub fn view(app: &ElementApp) -> Element<'_, Message> {
             container(
                 text(status)
                     .color(theme::TEXT_ERROR)
+                    .size(theme::SUBTITLE_SIZE),
+            )
+            .padding([theme::SPACING_SM, theme::CONTENT_PADDING_SIDES])
+            .height(theme::STATUS_HEIGHT),
+        );
+    } else if let Some(hint) = &app.hint {
+        content = content.push(
+            container(
+                text(hint)
+                    .color(theme::TEXT_MUTED)
                     .size(theme::SUBTITLE_SIZE),
             )
             .padding([theme::SPACING_SM, theme::CONTENT_PADDING_SIDES])
@@ -454,6 +586,7 @@ fn result_row(index: usize, result: &SearchResult, selected: bool) -> Element<'_
 
     mouse_area(item)
         .on_press(Message::ResultClicked(index))
+        .on_right_press(Message::ResultRightClick(index))
         .into()
 }
 

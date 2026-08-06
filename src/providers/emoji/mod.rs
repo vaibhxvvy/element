@@ -18,7 +18,7 @@ impl SearchProvider for EmojiProvider {
         q.starts_with("emoji") || q.starts_with(":")
     }
 
-    fn search(&self, _ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
+    fn search(&self, ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
         let q = query.trim().to_lowercase();
         let term = q
             .trim_start_matches("emoji")
@@ -32,6 +32,10 @@ impl SearchProvider for EmojiProvider {
             let name = emoji.name().to_lowercase();
             let codes: Vec<String> = emoji.shortcodes().map(|s| s.to_string()).collect();
             if term.is_empty() || name.contains(term) || codes.iter().any(|c| c.contains(term)) {
+                // Favorites (recently used emoji) get up to a 2× boost so
+                // they surface above the alphabetical decay order.
+                let frecency = ctx.db.emoji_frecency_score(emoji.as_str());
+                let boost = 1.0 + (frecency * 5.0).min(1.0);
                 results.push(SearchResult {
                     title: format!(
                         "{}  {}",
@@ -46,7 +50,7 @@ impl SearchProvider for EmojiProvider {
                     provider_id: "emoji".into(),
                     action: emoji.as_str().into(),
                     icon_rgba: None,
-                    score: 500.0 - (results.len() as f64),
+                    score: (500.0 - (results.len() as f64)) * boost,
                 });
                 if results.len() > 20 {
                     break;
@@ -57,12 +61,14 @@ impl SearchProvider for EmojiProvider {
         results
     }
 
-    fn activate(&self, _ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
+    fn activate(&self, ctx: &SearchContext, result: &SearchResult) -> Result<(), ElementError> {
         if result.action.is_empty() {
             return Err(ElementError::Other("empty emoji".into()));
         }
         arboard::Clipboard::new()
             .and_then(|mut c| c.set_text(&result.action))
-            .map_err(|e| ElementError::Other(format!("clipboard error: {:?}", e)))
+            .map_err(|e| ElementError::Other(format!("clipboard error: {:?}", e)))?;
+        ctx.db.record_emoji_use(&result.action);
+        Ok(())
     }
 }

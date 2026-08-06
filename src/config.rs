@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,9 @@ pub struct Config {
     pub file_index_depth: usize,
     /// Hard cap on indexed file entries.
     pub file_index_entries: usize,
+    /// Per-site search shortcuts: `yt cats` → YouTube search. Key is the
+    /// prefix, value a URL template with `%s` for the encoded query.
+    pub search_prefixes: HashMap<String, String>,
 }
 
 impl Default for Config {
@@ -40,6 +44,14 @@ impl Default for Config {
             accent: "#569cd4".into(),
             file_index_depth: 14,
             file_index_entries: 50_000,
+            search_prefixes: [
+                ("yt", "https://www.youtube.com/results?search_query=%s"),
+                ("gh", "https://github.com/search?q=%s"),
+                ("w", "https://en.wikipedia.org/w/index.php?search=%s"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
         }
     }
 }
@@ -229,6 +241,21 @@ clipboard_max_entries = 100
     fn config_data_dir_exists() {
         let dir = data_dir();
         assert!(dir.to_string_lossy().contains(".element"));
+    }
+
+    #[test]
+    fn search_prefixes_round_trip() {
+        let cfg = Config::default();
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(
+            parsed.search_prefixes.get("yt").map(String::as_str),
+            Some("https://www.youtube.com/results?search_query=%s")
+        );
+        assert_eq!(
+            parsed.search_prefixes.get("gh").map(String::as_str),
+            Some("https://github.com/search?q=%s")
+        );
     }
 
     #[test]
