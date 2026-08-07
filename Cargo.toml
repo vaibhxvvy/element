@@ -1,6 +1,6 @@
 [package]
 name = "element"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "A fast local launcher and search tool for Windows."
 

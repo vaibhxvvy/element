@@ -341,6 +341,25 @@ cargo build --release    # release (slow — LTO takes ~5min)
 cargo test               # 74 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard pinning/dedupe, emoji frecency, system commands, help, files, URL encoding, web prefixes)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
+
+## Releases
+
+Every change that warrants a version bump gets a new version + release
+(standing instruction — do this on feature/UX/fix batches, not per commit).
+Version lives in `Cargo.toml` AND `installer.iss` (`MyAppVersion`). Semver:
+features → minor, bug fixes → patch. Full release flow:
+
+1. `cargo build --release` (gate first: fmt + clippy + tests).
+2. `& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer.iss` → `element-<ver>-setup.exe`.
+3. `Compress-Archive target\release\element.exe, brandkit\windows\element.ico → element-<ver>-win64.zip`.
+4. Write `element-<ver>-setup.exe.sha256` (hash + filename), hash via `Get-FileHash -Algorithm SHA256`.
+5. New winget folder `winget/vaibhxvvy/Element/<ver>/` — copy the three yamls from the previous
+   version, bump `PackageVersion`, set `InstallerUrl` to the new tag URL and `InstallerSha256`
+   to the setup hash, update `ReleaseNotesUrl` and `ReleaseDate`. Keep old version folders.
+6. `gh release create v<ver> --title "Element <ver>" --notes "..."`, then
+   `gh release upload v<ver> element-<ver>-setup.exe element-<ver>-setup.exe.sha256 element-<ver>-win64.zip`.
+7. Update the download filenames in `README.md` if they reference a version.
+8. Commit + push everything (code, installer.iss, winget folder, README).
 ```
 
 ## Platform Code
