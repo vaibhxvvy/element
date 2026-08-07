@@ -216,7 +216,10 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
 
     match app.engine.handle(Request::Activate(result.clone())) {
         Outcome::Activated(Ok(()))
-            if matches!(result.kind.as_str(), "calc" | "emoji" | "clipboard") =>
+            if matches!(
+                result.kind.as_str(),
+                "calc" | "emoji" | "clipboard" | "snippet" | "color"
+            ) =>
         {
             app.status = Some("Copied to clipboard".into());
             app.hint = None;
@@ -836,9 +839,12 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
             "units — 5 km in miles, 100 c in f",
             "emoji — :smile or emoji rocket",
             "clipboard — cbhist or clip (Enter copies, right-click pins)",
+            "color — #ff0000 or #f00 (copies hex / rgb / hsl)",
+            "snippets — snip lists ~/.element/snippets.toml; a name copies it",
             "system — shutdown, restart, sleep, lock",
             "web — anything else searches the web",
             "web shortcuts — yt cats, gh element, w rust",
+            "web — a URL like example.com opens it directly",
             "settings — open this launcher's settings",
             "help — this panel",
         ],
@@ -849,6 +855,7 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
             "Frequently opened apps and files rank higher (frecency).",
             "Pinned clipboard entries survive history trimming.",
             "Settings apply live and are saved automatically.",
+            "Snippet edits apply on the next Alt+Space.",
             "Config lives in ~/.element/config.toml",
         ],
     ),

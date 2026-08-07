@@ -19,6 +19,10 @@ impl SearchProvider for WebSearchProvider {
     }
 
     fn search(&self, ctx: &SearchContext, query: &str) -> Vec<SearchResult> {
+        // Bare URL: open it directly instead of searching.
+        if let Some(result) = url_result(query) {
+            return vec![result];
+        }
         // Per-site shortcut: `yt cats`, `gh element`, ...
         if let Some(result) = prefix_search(ctx, query) {
             return vec![result];
@@ -48,6 +52,67 @@ fn config_or_default(config: &str, default: &str) -> String {
     } else {
         config.into()
     }
+}
+
+/// A bare URL (with scheme, `www.` host, or `host.tld/path`) becomes an
+/// "open this URL" result instead of a web search. Scores above prefix
+/// searches (850 vs 800) because the user typed the exact destination.
+fn url_result(query: &str) -> Option<SearchResult> {
+    let q = query.trim();
+    if !looks_like_url(q) {
+        return None;
+    }
+    let display = if q.len() > 64 {
+        let truncated: String = q.chars().take(64).collect();
+        format!("{truncated}…")
+    } else {
+        q.to_string()
+    };
+    let open = if q.contains("://") {
+        q.to_string()
+    } else {
+        format!("https://{q}")
+    };
+    Some(SearchResult {
+        title: format!("Open {display}"),
+        subtitle: open.clone(),
+        kind: "websearch".into(),
+        provider_id: "websearch".into(),
+        action: open,
+        icon_rgba: None,
+        score: 850.0,
+    })
+}
+
+/// Heuristic: is this a bare URL? Scheme-prefixed URLs always qualify; bare
+/// hosts need a plausible TLD (dot + 2+ alpha chars) and must not look like
+/// a decimal or a file extension (`readme.md` → files provider handles it).
+fn looks_like_url(q: &str) -> bool {
+    if q.is_empty() || q.contains(char::is_whitespace) {
+        return false;
+    }
+    if q.starts_with("http://")
+        || q.starts_with("https://")
+        || q.starts_with("ftp://")
+        || q.starts_with("file://")
+    {
+        return true;
+    }
+    if q.starts_with("www.") {
+        return true;
+    }
+    let lower = q.to_ascii_lowercase();
+    const SKIP_EXTS: [&str; 14] = [
+        "png", "jpg", "jpeg", "gif", "svg", "ico", "bmp", "webp", "pdf", "exe", "lnk", "zip",
+        "txt", "md",
+    ];
+    if SKIP_EXTS.iter().any(|e| lower.ends_with(&format!(".{e}"))) {
+        return false;
+    }
+    q.split('.').skip(1).any(|part| {
+        let host = part.split('/').next().unwrap_or(part);
+        host.len() >= 2 && host.chars().all(|c| c.is_ascii_alphabetic())
+    })
 }
 
 /// `yt cats` → a high-ranking result for the configured YouTube template.
@@ -176,5 +241,51 @@ mod tests {
         let provider = WebSearchProvider;
         let results = provider.search(&context, "zzz something");
         assert_eq!(results[0].title, "Search web for \"zzz something\"");
+    }
+
+    #[test]
+    fn bare_url_opens_directly() {
+        let config = Config::default();
+        let db = Database::new_in_memory();
+        let context = SearchContext {
+            config: &config,
+            db: &db,
+        };
+        let provider = WebSearchProvider;
+
+        // With scheme
+        let results = provider.search(&context, "https://github.com/vaibhxvvy/element");
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].title,
+            "Open https://github.com/vaibhxvvy/element"
+        );
+        assert_eq!(results[0].action, "https://github.com/vaibhxvvy/element");
+        assert_eq!(results[0].score, 850.0);
+
+        // Bare host gains https://
+        let results = provider.search(&context, "example.com/docs");
+        assert_eq!(results[0].action, "https://example.com/docs");
+
+        // www. host
+        let results = provider.search(&context, "www.youtube.com");
+        assert_eq!(results[0].action, "https://www.youtube.com");
+    }
+
+    #[test]
+    fn non_urls_stay_searches() {
+        let config = Config::default();
+        let db = Database::new_in_memory();
+        let context = SearchContext {
+            config: &config,
+            db: &db,
+        };
+        let provider = WebSearchProvider;
+
+        // Decimals, file extensions and plain phrases are not URLs.
+        for q in ["12.5", "readme.md", "cat photo", "v1.1.0", "192.168.1.1"] {
+            let results = provider.search(&context, q);
+            assert_eq!(results[0].score, -1.0, "query {q:?} should stay a search");
+        }
     }
 }

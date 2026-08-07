@@ -82,8 +82,13 @@ src/
 │   │                 #   delegates extraction to providers/icon.rs.
 │   ├── calculator/   # evalexpr. should_run: contains digits/math ops.
 │   │   └── mod.rs
+│   ├── color/         # "#ff0000" → hex/rgb/hsl results with a rendered
+│   │   └── mod.rs    #   swatch icon; Enter copies the selected variant.
 │   ├── units/        # "5 km in miles" / "100 c in f" — length, mass, volume,
 │   │   └── mod.rs    #   speed, data, time, temperature. Multi-separator parse.
+│   ├── snippets/     # Quick text insertions from ~/.element/snippets.toml
+│   │   └── mod.rs    #   (name = "text"). Exact name copies; "snip" lists.
+│   │                 #   Cached in memory, reloaded on refresh() (overlay open).
 │   ├── settings/     # "settings" → opens the in-launcher settings panel
 │   │   └── mod.rs    #   (UI intercepts kind=="settings"; width/URL/accent/autostart).
 │   ├── help/         # "help" → opens the in-launcher manual (hotkeys, providers,
@@ -115,7 +120,8 @@ src/
 │   │                 #   Documents/...): junk exclusions, depth/entry caps
 │   │                 #   from config (file_index_depth / file_index_entries).
 │   └── websearch/    # webbrowser + config.search_url. Always runs, score=-1 (bottom).
-│       └── mod.rs    #   Per-site shortcuts: `yt cats` → 800 (search_prefixes map
+│       └── mod.rs    #   Bare URLs (example.com, https://…) open directly, score=850.
+│                     #   Per-site shortcuts: `yt cats` → 800 (search_prefixes map
 │                     #   in config, `%s` template; defaults yt/gh/w).
 │
 ├── platform.rs       # Win32 helpers behind safe wrappers: copy_files_to_clipboard
@@ -182,7 +188,10 @@ alphabetically). Priority is **not** currently used in sort, only as future tieb
 Use scores strategically:
 - Calculator: 1000 (always on top when matched)
 - Units: 900
+- Color: 950/940/930 (hex, rgb, hsl — explicit `#hex` intent)
+- Web URL passthrough: 850 (typed destination)
 - Web prefix shortcuts (`yt …`): 800 (explicit intent)
+- Snippets: 700 exact name match, 500 listing (`snip …`, decaying)
 - Settings / Help panels: 1000 (UI intercepts kind and switches mode)
 - Emoji: 500 - index (decaying, up to 20) × frecency boost
 - Apps: fuzzy_score × frecency_boost (0–~200)

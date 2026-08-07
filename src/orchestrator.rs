@@ -73,6 +73,7 @@ impl Orchestrator {
             config.search_dirs.clone(),
         )));
         registry.add(Box::new(crate::providers::calculator::CalculatorProvider));
+        registry.add(Box::new(crate::providers::color::ColorProvider));
         registry.add(Box::new(crate::providers::emoji::EmojiProvider));
         registry.add(Box::new(crate::providers::clipboard::ClipboardProvider));
         registry.add(Box::new(crate::providers::files::FilesProvider::new(
@@ -84,6 +85,7 @@ impl Orchestrator {
         registry.add(Box::new(crate::providers::units::UnitsProvider));
         registry.add(Box::new(crate::providers::settings::SettingsProvider));
         registry.add(Box::new(crate::providers::help::HelpProvider));
+        registry.add(Box::new(crate::providers::snippets::SnippetsProvider::new()));
         registry.add(Box::new(crate::providers::system::SystemProvider));
 
         Self {
