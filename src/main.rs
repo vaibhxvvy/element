@@ -45,6 +45,11 @@ static LAUNCHER_LAST_SHOWN_MS: AtomicU32 = AtomicU32::new(0);
 /// window after that is treated as "keep it hidden" instead of re-showing.
 #[cfg(target_os = "windows")]
 static AUTO_HIDDEN_AT: AtomicU32 = AtomicU32::new(0);
+/// True once the launcher has been the foreground window since it was shown.
+/// Auto-hide only fires after that — a failed focus steal must never make
+/// the window blink open and immediately close.
+#[cfg(target_os = "windows")]
+static LAUNCHER_HAD_FOCUS: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 const FOCUS_LOSS_GRACE_MS: u32 = 250;
@@ -72,6 +77,7 @@ fn hide_launcher(hwnd: isize) {
     let ret = ShowWindow(hwnd, SW_HIDE);
     debug_log!("ShowWindow(SW_HIDE) returned: {}", ret);
     LAUNCHER_SHOWN.store(false, Ordering::SeqCst);
+    LAUNCHER_HAD_FOCUS.store(false, Ordering::SeqCst);
     HOTKEY_TRIGGERED.store(false, Ordering::SeqCst);
     debug_log!("window hidden");
 }
@@ -94,11 +100,26 @@ fn show_launcher(hwnd: isize) {
     );
 
     HIDE_REQUESTED.store(false, Ordering::SeqCst);
+    LAUNCHER_HAD_FOCUS.store(false, Ordering::SeqCst);
     let _ = ShowWindow(hwnd, SW_RESTORE);
     let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
-    // Keep focus simple — AttachThreadInput previously crashed mid-toggle.
     let _ = BringWindowToTop(hwnd);
-    let fg = SetForegroundWindow(hwnd);
+    // The hotkey gives us no direct user input, so Windows' foreground lock
+    // can block SetForegroundWindow. Attach to the launcher's window thread,
+    // set, and detach immediately — this grants foreground rights reliably.
+    let mut target_pid: u32 = 0;
+    let target_thread = GetWindowThreadProcessId(hwnd, &mut target_pid);
+    let cur_thread = GetCurrentThreadId();
+    let fg = if target_thread != 0 && target_thread != cur_thread {
+        let attached = AttachThreadInput(cur_thread, target_thread, 1);
+        let r = SetForegroundWindow(hwnd);
+        if attached != 0 {
+            AttachThreadInput(cur_thread, target_thread, 0);
+        }
+        r
+    } else {
+        SetForegroundWindow(hwnd)
+    };
     debug_log!("SetForegroundWindow returned: {}", fg);
     LAUNCHER_HWND.store(hwnd, Ordering::SeqCst);
     LAUNCHER_LAST_SHOWN_MS.store(GetTickCount(), Ordering::SeqCst);
@@ -146,6 +167,14 @@ fn toggle_launcher(from_tray: bool) {
         debug_log!("CRITICAL: toggle_launcher panicked — suppressed");
         LAUNCHER_SHOWN.store(false, Ordering::SeqCst);
     }
+}
+
+/// Find ANY window titled "Element" — used by a second instance to bring the
+/// first one's launcher to the foreground before exiting.
+#[cfg(target_os = "windows")]
+fn find_any_launcher_hwnd() -> isize {
+    let title = [69u16, 108, 101, 109, 101, 110, 116, 0]; // "Element"
+    FindWindowW(std::ptr::null(), title.as_ptr())
 }
 
 /// Find this process's Iced window titled "Element" via EnumWindows + PID check.
@@ -618,6 +647,52 @@ extern "system" fn GetCurrentProcessId() -> u32 {
 }
 
 #[cfg(target_os = "windows")]
+extern "system" fn GetCurrentThreadId() -> u32 {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThreadId() -> u32;
+    }
+    unsafe { GetCurrentThreadId() }
+}
+
+#[cfg(target_os = "windows")]
+extern "system" fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
+    }
+    unsafe { AttachThreadInput(idAttach, idAttachTo, fAttach) }
+}
+
+/// Named mutex used as the single-instance guard. The first instance never
+/// closes the handle — the kernel releases it when the process exits.
+#[cfg(target_os = "windows")]
+extern "system" fn CreateMutexW(
+    lpMutexAttributes: *const std::ffi::c_void,
+    bInitialOwner: i32,
+    lpName: *const u16,
+) -> isize {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateMutexW(
+            lpMutexAttributes: *const std::ffi::c_void,
+            bInitialOwner: i32,
+            lpName: *const u16,
+        ) -> isize;
+    }
+    unsafe { CreateMutexW(lpMutexAttributes, bInitialOwner, lpName) }
+}
+
+#[cfg(target_os = "windows")]
+extern "system" fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> isize {
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> isize;
+    }
+    unsafe { FindWindowW(lpClassName, lpWindowName) }
+}
+
+#[cfg(target_os = "windows")]
 extern "system" fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32 {
     #[link(name = "user32")]
     extern "system" {
@@ -845,6 +920,30 @@ pub fn main() -> iced::Result {
     debug_log::init();
     debug_log!("=== Element v{} starting ===", env!("CARGO_PKG_VERSION"));
 
+    // Single-instance guard: a named mutex. A second instance (e.g. running
+    // the installed copy while a dev build is live) activates the first
+    // instance's launcher window and exits instead of double-registering the
+    // hotkey — two instances toggling the same combo fight each other and
+    // make the window blink open/closed.
+    #[cfg(target_os = "windows")]
+    {
+        const ERROR_ALREADY_EXISTS: i32 = 183;
+        let name = "Local\\ElementLauncherSingleInstance\0"
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        let mutex = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        if mutex != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ALREADY_EXISTS)
+        {
+            debug_log!("another instance is running — activating it and exiting");
+            let hwnd = find_any_launcher_hwnd();
+            if hwnd != 0 {
+                show_launcher(hwnd);
+            }
+            std::process::exit(0);
+        }
+    }
+
     let config = Arc::new(config::Config::load());
     WINDOW_WIDTH.store(config.window_width as u32, Ordering::Relaxed);
     let init_win_size = iced::Size::new(config.window_width, 56.0);
@@ -1034,14 +1133,23 @@ pub fn main() -> iced::Result {
                         LAUNCHER_HWND.store(hwnd, Ordering::SeqCst);
                     }
                     let now = GetTickCount();
-                    if hwnd != 0
-                        && GetForegroundWindow() != hwnd
-                        && now.wrapping_sub(LAUNCHER_LAST_SHOWN_MS.load(Ordering::SeqCst))
-                            > FOCUS_LOSS_GRACE_MS
-                    {
-                        debug_log!("AUTO-HIDE: launcher lost focus — hiding");
-                        AUTO_HIDDEN_AT.store(now, Ordering::SeqCst);
-                        hide_launcher(hwnd);
+                    if hwnd != 0 {
+                        let is_fg = GetForegroundWindow() == hwnd;
+                        if is_fg {
+                            LAUNCHER_HAD_FOCUS.store(true, Ordering::SeqCst);
+                        }
+                        // Only auto-hide after the window has actually held
+                        // focus — otherwise a denied foreground steal makes
+                        // it flash open and close.
+                        if !is_fg
+                            && LAUNCHER_HAD_FOCUS.load(Ordering::SeqCst)
+                            && now.wrapping_sub(LAUNCHER_LAST_SHOWN_MS.load(Ordering::SeqCst))
+                                > FOCUS_LOSS_GRACE_MS
+                        {
+                            debug_log!("AUTO-HIDE: launcher lost focus — hiding");
+                            AUTO_HIDDEN_AT.store(now, Ordering::SeqCst);
+                            hide_launcher(hwnd);
+                        }
                     }
                 }
 

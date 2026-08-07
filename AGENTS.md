@@ -257,8 +257,9 @@ Three-tier strategy in `hotkey::install()` (`src/hotkey/mod.rs`):
 3. **Fallback combos** — if both tier 1 and 2 fail, try `hotkey_fallback_candidates()`
    (Alt+Space, Ctrl+Space, Ctrl+Shift+Space, etc.) until one succeeds.
 
-Key-repeat is prevented by the `TOGGLE_PENDING` atomic — the LL hook only sets the
-flag on the first keydown and swallows the matching keyup until it is consumed.
+Key-repeat is prevented by the `TOGGLE_PENDING` + `COMBO_DOWN` atomics — the
+LL hook only sets the flag on the first keydown of a hold and swallows the
+matching keyup until it is consumed.
 
 ### Single-instance guard
 
@@ -266,7 +267,18 @@ Named mutex (`Local\ElementLauncherSingleInstance`) via `CreateMutexW`. On
 `ERROR_ALREADY_EXISTS`, the second instance calls `find_any_launcher_hwnd()` +
 `show_launcher()` to bring the existing window to foreground, then exits.
 The first instance never calls `CloseHandle` — the kernel releases the mutex
-automatically on process termination.
+automatically on process termination. Without this, a second copy double-
+registers the hotkey (RegisterHotKey + LL-hook fallback) and both toggle the
+window against each other.
+
+### Reliable foreground steal
+
+`SetForegroundWindow` from the hotkey thread is normally blocked by Windows'
+foreground lock (the process receives no direct user input). `show_launcher`
+attaches to the launcher window's thread via `AttachThreadInput`, sets
+foreground, then detaches immediately. Auto-hide only fires after the window
+has actually held focus at least once (`LAUNCHER_HAD_FOCUS`) — a denied
+foreground steal never makes the window blink open and close.
 
 ### PID-based window finding — not FindWindowW
 

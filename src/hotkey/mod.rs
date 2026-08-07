@@ -12,6 +12,10 @@ static WANT_MODS: AtomicU32 = AtomicU32::new(0);
 static WANT_VK: AtomicU32 = AtomicU32::new(0);
 static HOOK: AtomicIsize = AtomicIsize::new(0);
 static TOGGLE_PENDING: AtomicBool = AtomicBool::new(false);
+/// True while the hotkey combo is physically held down. Key-repeat keydowns
+/// must NOT re-arm the toggle — re-arming made holding Alt+Space flicker the
+/// window open/closed for every repeat.
+static COMBO_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// True while a WH_KEYBOARD_LL hook is installed (needs a responsive message pump).
 pub fn hook_active() -> bool {
@@ -69,6 +73,7 @@ pub fn uninstall() {
         debug_log!("hotkey: LL hook removed");
     }
     TOGGLE_PENDING.store(false, Ordering::SeqCst);
+    COMBO_DOWN.store(false, Ordering::SeqCst);
 }
 
 fn install_ll_hook(mods: u32, vk: u32) -> bool {
@@ -137,14 +142,19 @@ extern "system" fn ll_hook_proc(code: i32, wparam: usize, lparam: isize) -> isiz
 
         if kb.vk_code == want_vk {
             if is_down && mods_held(want_mods, kb.flags) {
-                TOGGLE_PENDING.store(true, Ordering::SeqCst);
+                // Only the first keydown of a hold arms the toggle; repeats
+                // are still swallowed but don't re-trigger.
+                if !COMBO_DOWN.swap(true, Ordering::SeqCst) {
+                    TOGGLE_PENDING.store(true, Ordering::SeqCst);
+                }
                 return 1;
             }
             // Swallow Space-up after we took the combo so the app doesn't get a space.
-            if is_up
-                && (mods_held(want_mods, kb.flags | 0x20) || TOGGLE_PENDING.load(Ordering::Relaxed))
-            {
-                return 1;
+            if is_up {
+                COMBO_DOWN.store(false, Ordering::SeqCst);
+                if mods_held(want_mods, kb.flags | 0x20) || TOGGLE_PENDING.load(Ordering::Relaxed) {
+                    return 1;
+                }
             }
         }
     }
