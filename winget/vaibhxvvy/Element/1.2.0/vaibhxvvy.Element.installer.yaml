@@ -1,0 +1,16 @@
+PackageIdentifier: vaibhxvvy.Element
+PackageVersion: 1.2.0
+InstallerLocale: en-US
+InstallerType: inno
+InstallModes:
+  - silent
+  - silentWithProgress
+Commands:
+  - element
+ReleaseDate: 2026-08-07
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/vaibhxvvy/element/releases/download/v1.2.0/element-1.2.0-setup.exe
+    InstallerSha256: 2C3902936D4BD1EE13633DBDEC3F18B7013C0A3CBB11D10F1547DADF102A5CEB
+ManifestType: installer
+ManifestVersion: 1.12.0

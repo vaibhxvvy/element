@@ -194,11 +194,11 @@ winget install vaibhxvvy.Element
 
 ### Portable zip
 
-Download `element-1.1.0-win64.zip` from the [latest release](https://github.com/vaibhxvvy/element/releases/latest), extract `element.exe` to any folder, and run it.
+Download `element-1.2.0-win64.zip` from the [latest release](https://github.com/vaibhxvvy/element/releases/latest), extract `element.exe` to any folder, and run it.
 
 ### Inno Setup installer
 
-Download `element-1.1.0-setup.exe` from the [latest release](https://github.com/vaibhxvvy/element/releases/latest) and run it.
+Download `element-1.2.0-setup.exe` from the [latest release](https://github.com/vaibhxvvy/element/releases/latest) and run it.
 
 ### Build from source
 
