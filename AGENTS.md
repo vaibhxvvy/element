@@ -347,7 +347,9 @@ cargo clippy -- -D warnings   # lint (blocking on CI)
 Every change that warrants a version bump gets a new version + release
 (standing instruction — do this on feature/UX/fix batches, not per commit).
 Version lives in `Cargo.toml` AND `installer.iss` (`MyAppVersion`). Semver:
-features → minor, bug fixes → patch. Full release flow:
+features → minor, bug fixes → patch. **Never delete or overwrite an existing
+release/tag — old releases stay forever; ship changes as a new version.**
+Full release flow:
 
 1. `cargo build --release` (gate first: fmt + clippy + tests).
 2. `& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer.iss` → `element-<ver>-setup.exe`.
