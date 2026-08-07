@@ -18,10 +18,19 @@ impl Database {
             std::process::exit(1);
         });
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS clipboard_entries (
+            "            CREATE TABLE IF NOT EXISTS clipboard_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 content_type TEXT NOT NULL DEFAULT 'text',
                 text_content TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                pinned INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS clipboard_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 pinned INTEGER NOT NULL DEFAULT 0
             );
@@ -145,15 +154,146 @@ impl Database {
         new_state
     }
 
+    /// Clipboard image history: `(path, width, height, created_at, pinned)`,
+    /// pinned entries first, then newest first.
+    pub fn load_clipboard_images(&self, limit: usize) -> Vec<(String, u32, u32, String, bool)> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT path, width, height, created_at, pinned FROM clipboard_images ORDER BY pinned DESC, id DESC LIMIT ?1"
+        ) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0).unwrap_or_default(),
+                row.get::<_, u32>(1).unwrap_or(0),
+                row.get::<_, u32>(2).unwrap_or(0),
+                row.get::<_, String>(3).unwrap_or_default(),
+                row.get::<_, bool>(4).unwrap_or(false),
+            ))
+        })
+        .ok()
+        .map(|m| m.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Record a clipboard image capture (dedupe by content hash: an unpinned
+    /// duplicate is deleted and re-inserted so it bumps to the top, a pinned
+    /// row keeps its pin and just refreshes its timestamp), then trim
+    /// unpinned entries beyond `keep`, deleting their cached files from disk.
+    pub fn save_clipboard_image(
+        &self,
+        hash: &str,
+        path: &str,
+        width: u32,
+        height: u32,
+        keep: usize,
+    ) {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let pinned: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM clipboard_images WHERE hash = ?1 AND pinned = 1)",
+                params![hash],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        let unpinned: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM clipboard_images WHERE hash = ?1 AND pinned = 0)",
+                params![hash],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if unpinned {
+            let _ = conn.execute(
+                "DELETE FROM clipboard_images WHERE hash = ?1 AND pinned = 0",
+                params![hash],
+            );
+            let _ = conn.execute(
+                "INSERT INTO clipboard_images (hash, path, width, height) VALUES (?1, ?2, ?3, ?4)",
+                params![hash, path, width as i64, height as i64],
+            );
+        } else if pinned {
+            let _ = conn.execute(
+                "UPDATE clipboard_images SET created_at = CURRENT_TIMESTAMP WHERE hash = ?1",
+                params![hash],
+            );
+        } else {
+            let _ = conn.execute(
+                "INSERT INTO clipboard_images (hash, path, width, height) VALUES (?1, ?2, ?3, ?4)",
+                params![hash, path, width as i64, height as i64],
+            );
+        }
+        // Trim unpinned entries beyond the cap, removing their files.
+        let doomed: Vec<String> = conn
+            .prepare(
+                "SELECT path FROM clipboard_images WHERE pinned = 0 AND id NOT IN (
+                    SELECT id FROM clipboard_images WHERE pinned = 0 ORDER BY id DESC LIMIT ?1
+                )",
+            )
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map(params![keep as i64], |row| row.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap_or_default();
+        for p in &doomed {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = conn.execute(
+            "DELETE FROM clipboard_images WHERE pinned = 0 AND id NOT IN (
+                SELECT id FROM clipboard_images WHERE pinned = 0 ORDER BY id DESC LIMIT ?1
+            )",
+            params![keep as i64],
+        );
+    }
+
+    /// Flip the pin on the image entry with this cached path; returns the new
+    /// state.
+    pub fn toggle_clipboard_image_pinned(&self, path: &str) -> bool {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let current: bool = conn
+            .query_row(
+                "SELECT pinned FROM clipboard_images WHERE path = ?1 ORDER BY id DESC LIMIT 1",
+                params![path],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        let new_state = !current;
+        let _ = conn.execute(
+            "UPDATE clipboard_images SET pinned = ?2 WHERE path = ?1",
+            params![path, new_state as i32],
+        );
+        new_state
+    }
+
     /// Create a temporary in-memory database for testing.
     #[cfg(test)]
     pub(crate) fn new_in_memory() -> Self {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS clipboard_entries (
+            "            CREATE TABLE IF NOT EXISTS clipboard_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 content_type TEXT NOT NULL DEFAULT 'text',
                 text_content TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                pinned INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS clipboard_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 pinned INTEGER NOT NULL DEFAULT 0
             );
@@ -447,6 +587,50 @@ mod tests {
         let entries = db.load_clipboard(10);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].2, "pin preserved across re-saves");
+    }
+
+    #[test]
+    fn image_history_saves_loads_and_dedupes_by_hash() {
+        let db = Database::new_in_memory();
+        db.save_clipboard_image("hash-a", "C:\\cache\\a.png", 100, 50, 10);
+        db.save_clipboard_image("hash-b", "C:\\cache\\b.png", 200, 100, 10);
+        db.save_clipboard_image("hash-a", "C:\\cache\\a.png", 100, 50, 10);
+        let images = db.load_clipboard_images(10);
+        assert_eq!(images.len(), 2, "duplicate hash stored once");
+        assert_eq!(
+            images[0].0, "C:\\cache\\a.png",
+            "re-captured image bumps to top"
+        );
+        assert_eq!((images[0].1, images[0].2), (100, 50));
+    }
+
+    #[test]
+    fn image_history_trims_to_keep_and_pins_survive() {
+        let db = Database::new_in_memory();
+        for i in 0..10 {
+            db.save_clipboard_image(
+                &format!("hash-{i}"),
+                &format!("C:\\cache\\img-{i}.png"),
+                10,
+                10,
+                3,
+            );
+        }
+        // Pin the oldest survivor (7), then push past the cap again.
+        assert!(db.toggle_clipboard_image_pinned("C:\\cache\\img-7.png"));
+        for i in 10..13 {
+            db.save_clipboard_image(
+                &format!("hash-{i}"),
+                &format!("C:\\cache\\img-{i}.png"),
+                10,
+                10,
+                3,
+            );
+        }
+        let images = db.load_clipboard_images(100);
+        assert_eq!(images[0].0, "C:\\cache\\img-7.png", "pinned image first");
+        assert!(images[0].4, "pinned flag set");
+        assert_eq!(images.len(), 4, "3 unpinned + 1 pinned");
     }
 
     #[test]

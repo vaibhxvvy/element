@@ -31,6 +31,8 @@ pub enum Request {
     UpdateFileIndex { depth: usize, entries: usize },
     /// Toggle the pinned state of a clipboard entry.
     PinClipboard(String),
+    /// Toggle the pinned state of a clipboard image entry (by cached path).
+    PinClipboardImage(String),
     /// Run a secondary action on a file/folder path.
     FileAction { path: String, action: FileAction },
 }
@@ -110,6 +112,9 @@ impl Orchestrator {
                 Outcome::Refreshed(self.revision())
             }
             Request::PinClipboard(text) => Outcome::Pinned(self.db.toggle_clipboard_pinned(&text)),
+            Request::PinClipboardImage(path) => {
+                Outcome::Pinned(self.db.toggle_clipboard_image_pinned(&path))
+            }
             Request::FileAction { path, action } => {
                 Outcome::Activated(self.file_action(&path, action))
             }

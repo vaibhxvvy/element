@@ -23,7 +23,11 @@ src/
 │                     # Tray: hidden message-only window, left-click toggle, right-click Exit
 │                     # Window: PID-based EnumWindows (not FindWindowW)
 │                     # Clipboard watcher: "element-clipboard" thread polls every
-│                     #   800 ms → db.save_clipboard (dedupe + trim)
+│                     #   800 ms → db.save_clipboard (dedupe + trim); also captures
+│                     #   bitmaps (DIB/DIBV5/PNG) → full+thumb PNG in
+│                     #   cache/clipboard/ + db.save_clipboard_image (pixel-hash
+│                     #   dedupe, 16 MB cap). Helpers: capture_clipboard_image,
+│                     #   write_clipboard_image_files.
 │                     # Atomics: HOTKEY_TRIGGERED, HIDE_REQUESTED, EXIT_REQUESTED,
 │                     #          RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH,
 │                     #          WINDOW_FOUND, LAUNCHER_SHOWN, LAST_TOGGLE_MS,
@@ -46,10 +50,13 @@ src/
 │                     # Hotkey parsing: parse_hotkey(), hotkey_fallback_candidates().
 │
 ├── database.rs       # SQLite via rusqlite (bundled). Mutex<Connection>.
-│                     # Tables: clipboard_entries (pinned flag), emoji_frecency,
-│                     #          frecency, file_frecency.
+│                     # Tables: clipboard_entries (pinned flag), clipboard_images
+│                     #          (hash UNIQUE, path, width/height, pinned),
+│                     #          emoji_frecency, frecency, file_frecency.
 │                     # Methods: load_clipboard, save_clipboard (dedupe/trim),
-│                     #          toggle_clipboard_pinned, record_emoji_use,
+│                     #          toggle_clipboard_pinned, load/save_clipboard_images
+│                     #          (dedupe by hash, trim removes cached files),
+│                     #          toggle_clipboard_image_pinned, record_emoji_use,
 │                     #          emoji_frecency_score, record_launch, top_frecency,
 │                     #          frecency_score, record_file_open,
 │                     #          file_frecency_score (case-insensitive keys).
@@ -96,8 +103,12 @@ src/
 │   ├── emoji/        # emojis crate. should_run: starts with "emoji" or ":".
 │   │   └── mod.rs    #   Frecency boost (≤2×) from emoji_frecency table; activate
 │   │                 #   records usage via record_emoji_use.
-│   ├── clipboard/    # SQLite clipboard table. should_run: "cbhist" or "clip".
-│   │   └── mod.rs    #   Pinned rows sort first and show 📌 ("· pinned" subtitle).
+│   ├── clipboard/    # SQLite clipboard tables. should_run: "cbhist" or "clip".
+│   │   └── mod.rs    #   Text + image entries merged by (pinned, recency).
+│   │                 #   Pinned rows sort first and show 📌 ("· pinned" subtitle).
+│   │                 #   Image rows: kind "clipboard-image", 64×64 thumb PNG
+│   │                 #   decoded into icon_rgba; Enter restores the image to
+│   │                 #   the clipboard as CF_DIB (rgba_to_dib + set_clipboard_bitmap).
 │   ├── system/       # System commands. should_run: shutdown/restart/reboot(alias)/
 │   │   └── mod.rs    #   sleep/lock at query start (word boundary, case-insensitive).
 │   │                 #   Score 300, priority 9. shutdown.exe for off/restart;
@@ -125,7 +136,9 @@ src/
 │                     #   in config, `%s` template; defaults yt/gh/w).
 │
 ├── platform.rs       # Win32 helpers behind safe wrappers: copy_files_to_clipboard
-│                     # (CF_HDROP), lock_workstation, suspend_system.
+│                     # (CF_HDROP), lock_workstation, suspend_system,
+│                     # clipboard_bitmap_bytes (CF_DIB/DIBV5/PNG capture),
+│                     # set_clipboard_bitmap, dib_to_rgba / rgba_to_dib.
 │
 └── ui/
     └── mod.rs        # Iced views. Search TextInput, scrollable results list,

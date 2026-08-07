@@ -915,6 +915,92 @@ pub(crate) fn set_autostart(enabled: bool) {
     RegCloseKey(hkey);
 }
 
+/// Largest clipboard bitmap we'll keep (16 MB covers full-size screenshots;
+/// bigger blobs are ignored to keep the history and cache bounded).
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Poll once for a clipboard image. Writes full + thumbnail PNGs to
+/// `~/.element/cache/clipboard/` and records a row (deduped by pixel hash,
+/// trimmed to `keep`) — but only when the pixels actually changed since the
+/// last capture, so the 800 ms poll doesn't re-capture the same image.
+fn capture_clipboard_image(
+    db: &crate::database::Database,
+    last_image: &mut Option<u64>,
+    keep: usize,
+) {
+    let Some((bytes, format)) = crate::platform::clipboard_bitmap_bytes() else {
+        return;
+    };
+    if bytes.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+        // Remember the blob so we don't re-decode it every poll tick.
+        let raw = hash_bytes(&bytes);
+        if *last_image != Some(raw) {
+            *last_image = Some(raw);
+        }
+        return;
+    }
+    let (rgba, width, height) = match format {
+        crate::platform::ClipboardBitmapFormat::Dib
+        | crate::platform::ClipboardBitmapFormat::DibV5 => {
+            let Some(px) = crate::platform::dib_to_rgba(&bytes) else {
+                return;
+            };
+            px
+        }
+        crate::platform::ClipboardBitmapFormat::Png => {
+            let Ok(img) = image::load_from_memory(&bytes) else {
+                return;
+            };
+            let img = img.to_rgba8();
+            let (w, h) = (img.width(), img.height());
+            (img.into_raw(), w, h)
+        }
+    };
+    let content_hash = hash_bytes(&rgba);
+    if *last_image == Some(content_hash) {
+        return;
+    }
+    *last_image = Some(content_hash);
+
+    let Some(full_path) = write_clipboard_image_files(&rgba, width, height) else {
+        return;
+    };
+    db.save_clipboard_image(
+        &format!("{content_hash:016x}"),
+        &full_path.to_string_lossy(),
+        width,
+        height,
+        keep,
+    );
+}
+
+/// Store a captured image as a full-res PNG plus a 64×64 thumbnail in
+/// `~/.element/cache/clipboard/`. Returns the full-res path (the thumbnail is
+/// derived from it: `name-thumb.png`).
+fn write_clipboard_image_files(rgba: &[u8], width: u32, height: u32) -> Option<std::path::PathBuf> {
+    let dir = crate::config::data_dir().join("cache").join("clipboard");
+    std::fs::create_dir_all(&dir).ok()?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let stem = format!("clip-{millis}");
+    let full = dir.join(format!("{stem}.png"));
+    let thumb = dir.join(format!("{stem}-thumb.png"));
+    let img = image::RgbaImage::from_raw(width, height, rgba.to_vec())?;
+    img.save(&full).ok()?;
+    let small = image::imageops::thumbnail(&img, 64, 64);
+    small.save(&thumb).ok()?;
+    Some(full)
+}
+
 #[allow(clippy::manual_dangling_ptr)]
 pub fn main() -> iced::Result {
     debug_log::init();
@@ -1200,7 +1286,8 @@ pub fn main() -> iced::Result {
                 .name("element-clipboard".into())
                 .spawn(move || {
                     let mut clipboard = arboard::Clipboard::new().ok();
-                    let mut last: Option<String> = None;
+                    let mut last_text: Option<String> = None;
+                    let mut last_image: Option<u64> = None;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(800));
                         if EXIT_REQUESTED.load(Ordering::SeqCst) {
@@ -1210,10 +1297,13 @@ pub fn main() -> iced::Result {
                         else {
                             continue;
                         };
-                        if last.as_deref() != Some(text.as_str()) {
-                            last = Some(text.clone());
+                        if last_text.as_deref() != Some(text.as_str()) {
+                            last_text = Some(text.clone());
                             watcher_db.save_clipboard(&text, clip_keep);
                         }
+                        // Images ride the same poll: bitmaps (DIB / DIBV5 / PNG)
+                        // are captured, thumbnailed and recorded in history.
+                        capture_clipboard_image(&watcher_db, &mut last_image, clip_keep);
                     }
                 })
                 .ok();

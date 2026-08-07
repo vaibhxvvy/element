@@ -136,21 +136,24 @@ fn refresh_hint(app: &mut ElementApp) {
             "files" => {
                 Some("Enter open  ·  Alt+C copy path  ·  Alt+F copy file  ·  Alt+Enter reveal")
             }
-            "clipboard" => Some("Enter copy  ·  Right-click to pin"),
+            "clipboard" | "clipboard-image" => Some("Enter copy  ·  Right-click to pin"),
             _ => None,
         })
         .map(str::to_string);
 }
 
-/// Toggle pin on a clipboard entry via the orchestrator, then refresh.
+/// Toggle pin on a clipboard entry (text or image) via the orchestrator,
+/// then refresh.
 fn pin_clipboard(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
     let Some(result) = app.results.get(index).cloned() else {
         return iced::Task::none();
     };
-    match app
-        .engine
-        .handle(Request::PinClipboard(result.action.clone()))
-    {
+    let request = if result.kind == "clipboard-image" {
+        Request::PinClipboardImage(result.action.clone())
+    } else {
+        Request::PinClipboard(result.action.clone())
+    };
+    match app.engine.handle(request) {
         Outcome::Pinned(pinned) => {
             app.status = Some(if pinned {
                 "Pinned — stays in history".into()
@@ -218,7 +221,7 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
         Outcome::Activated(Ok(()))
             if matches!(
                 result.kind.as_str(),
-                "calc" | "emoji" | "clipboard" | "snippet" | "color"
+                "calc" | "emoji" | "clipboard" | "clipboard-image" | "snippet" | "color"
             ) =>
         {
             app.status = Some("Copied to clipboard".into());
@@ -838,7 +841,7 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
             "math — 12 * 3 + 4, 2^8",
             "units — 5 km in miles, 100 c in f",
             "emoji — :smile or emoji rocket",
-            "clipboard — cbhist or clip (Enter copies, right-click pins)",
+            "clipboard — cbhist or clip (text and images; Enter copies, right-click pins)",
             "color — #ff0000 or #f00 (copies hex / rgb / hsl)",
             "snippets — snip lists ~/.element/snippets.toml; a name copies it",
             "system — shutdown, restart, sleep, lock",
