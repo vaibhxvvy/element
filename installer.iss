@@ -1,8 +1,8 @@
-; Inno Setup script for Element v1.2.0
+; Inno Setup script for Element v1.3.0
 ; Build with: iscc installer.iss
 
 #define MyAppName "Element"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "tetracode"
 #define MyAppURL "https://github.com/vaibhxvvy/element"
 #define MyAppExeName "element.exe"
