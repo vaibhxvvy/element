@@ -7,6 +7,7 @@ pub mod calculator;
 pub mod clipboard;
 pub mod emoji;
 pub mod files;
+pub mod help;
 pub mod settings;
 pub mod system;
 pub mod units;

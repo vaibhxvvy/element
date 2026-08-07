@@ -86,6 +86,8 @@ src/
 │   │   └── mod.rs    #   speed, data, time, temperature. Multi-separator parse.
 │   ├── settings/     # "settings" → opens the in-launcher settings panel
 │   │   └── mod.rs    #   (UI intercepts kind=="settings"; width/URL/accent/autostart).
+│   ├── help/         # "help" → opens the in-launcher manual (hotkeys, providers,
+│   │   └── mod.rs    #   tips). UI intercepts kind=="help" like the settings flow.
 │   ├── emoji/        # emojis crate. should_run: starts with "emoji" or ":".
 │   │   └── mod.rs    #   Frecency boost (≤2×) from emoji_frecency table; activate
 │   │                 #   records usage via record_emoji_use.
@@ -122,7 +124,8 @@ src/
 └── ui/
     └── mod.rs        # Iced views. Search TextInput, scrollable results list,
                       # status row for activation feedback, contextual hint row
-                      # (files: Alt+C/F/Enter; clipboard: right-click to pin).
+                      # (files: Alt+C/F/Enter; clipboard: right-click to pin),
+                      # settings + help panels (Mode enum; Esc/Back leaves).
                       # Sends Request to the Orchestrator via engine.handle(Request)
                       # and matches Outcome.
 ```
@@ -180,6 +183,7 @@ Use scores strategically:
 - Calculator: 1000 (always on top when matched)
 - Units: 900
 - Web prefix shortcuts (`yt …`): 800 (explicit intent)
+- Settings / Help panels: 1000 (UI intercepts kind and switches mode)
 - Emoji: 500 - index (decaying, up to 20) × frecency boost
 - Apps: fuzzy_score × frecency_boost (0–~200)
 - Clipboard: 200
@@ -322,7 +326,7 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 72 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard pinning/dedupe, emoji frecency, system commands, files, URL encoding, web prefixes)
+cargo test               # 74 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard pinning/dedupe, emoji frecency, system commands, help, files, URL encoding, web prefixes)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 ```

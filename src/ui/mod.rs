@@ -19,8 +19,10 @@ use crate::{
 
 const RESULTS_SCROLL_ID: &str = "results";
 const SETTINGS_URL_ID: &str = "settings-url";
+const HELP_SCROLL_ID: &str = "help";
 
 const SETTINGS_WINDOW_HEIGHT: f32 = 460.0;
+const HELP_WINDOW_HEIGHT: f32 = 500.0;
 const WIDTH_MIN: f32 = 400.0;
 const WIDTH_MAX: f32 = 900.0;
 const DEPTH_MIN: f32 = 4.0;
@@ -36,6 +38,7 @@ const ACCENT_SWATCHES: [&str; 6] = [
 pub enum Mode {
     Search,
     Settings,
+    Help,
 }
 
 /// Editable settings state, initialized from the startup config and saved on exit.
@@ -71,6 +74,7 @@ pub enum Message {
     KeyPressed(Key, Modifiers),
     Tick,
     SettingsBack,
+    HelpBack,
     SearchUrlChanged(String),
     WidthChanged(f32),
     AccentChanged(String),
@@ -205,6 +209,10 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
         open_settings(app);
         return iced::Task::none();
     }
+    if result.kind == "help" {
+        open_help(app);
+        return iced::Task::none();
+    }
 
     match app.engine.handle(Request::Activate(result.clone())) {
         Outcome::Activated(Ok(()))
@@ -269,6 +277,24 @@ fn leave_settings(app: &mut ElementApp) -> iced::Task<Message> {
     iced::Task::batch(vec![text_input::focus("search"), search_task])
 }
 
+fn open_help(app: &mut ElementApp) {
+    debug_log!("UI: opening help panel");
+    app.mode = Mode::Help;
+    app.status = None;
+    app.hint = None;
+    RESIZE_HEIGHT.store(HELP_WINDOW_HEIGHT as u32, Ordering::Relaxed);
+    RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+fn leave_help(app: &mut ElementApp) -> iced::Task<Message> {
+    app.mode = Mode::Search;
+    app.input.clear();
+    app.status = None;
+    app.hint = None;
+    let search_task = search(app, "");
+    iced::Task::batch(vec![text_input::focus("search"), search_task])
+}
+
 fn apply_width(app: &mut ElementApp, width: f32) {
     app.settings.window_width = width;
     WINDOW_WIDTH.store(width as u32, Ordering::Relaxed);
@@ -286,6 +312,7 @@ fn apply_accent(app: &mut ElementApp, hex: &str) {
 pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
     match message {
         Message::SettingsBack => return leave_settings(app),
+        Message::HelpBack => return leave_help(app),
         Message::SearchUrlChanged(url) => {
             app.settings.search_url = url;
             return iced::Task::none();
@@ -371,6 +398,16 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 if key == Key::Named(key::Named::Backspace) && app.settings.search_url.is_empty() {
                     debug_log!("UI: Backspace in settings – back to search");
                     return leave_settings(app);
+                }
+                return iced::Task::none();
+            }
+            if app.mode == Mode::Help {
+                if matches!(
+                    key,
+                    Key::Named(key::Named::Escape) | Key::Named(key::Named::Backspace)
+                ) {
+                    debug_log!("UI: back from help panel");
+                    return leave_help(app);
                 }
                 return iced::Task::none();
             }
@@ -461,6 +498,9 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
 pub fn view(app: &ElementApp) -> Element<'_, Message> {
     if app.mode == Mode::Settings {
         return settings_view(app);
+    }
+    if app.mode == Mode::Help {
+        return help_view();
     }
 
     let search = text_input::TextInput::new("Search apps or type a web query...", &app.input)
@@ -762,6 +802,111 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
     container(list)
         .width(Length::Fill)
         .height(Length::Shrink)
+        .style(element_container_style)
+        .into()
+}
+
+/// Manual content — (section title, body lines). Rendered by [`help_view`].
+const HELP_SECTIONS: &[(&str, &[&str])] = &[
+    (
+        "Quick start",
+        &[
+            "Press Alt+Space to open the launcher.",
+            "Type to search — Enter opens or copies, Esc hides.",
+            "Type \"settings\" for options, \"help\" for this manual.",
+        ],
+    ),
+    (
+        "Keys",
+        &[
+            "↑/↓ or Ctrl+P / Ctrl+N — move selection",
+            "Ctrl+1-9 — jump straight to a result",
+            "Enter — open or copy the selected result",
+            "Alt+C / Alt+F / Alt+Enter — copy path / copy file / reveal (files)",
+            "Right-click — copy path (files) or pin (clipboard)",
+            "Backspace or Esc — leave a panel",
+        ],
+    ),
+    (
+        "What can I type?",
+        &[
+            "apps — just type the name: chrome, vs code",
+            "files — \"file report\" / \"folder projects\"; bare names work too: invoice.pdf",
+            "math — 12 * 3 + 4, 2^8",
+            "units — 5 km in miles, 100 c in f",
+            "emoji — :smile or emoji rocket",
+            "clipboard — cbhist or clip (Enter copies, right-click pins)",
+            "system — shutdown, restart, sleep, lock",
+            "web — anything else searches the web",
+            "web shortcuts — yt cats, gh element, w rust",
+            "settings — open this launcher's settings",
+            "help — this panel",
+        ],
+    ),
+    (
+        "Tips",
+        &[
+            "Frequently opened apps and files rank higher (frecency).",
+            "Pinned clipboard entries survive history trimming.",
+            "Settings apply live and are saved automatically.",
+            "Config lives in ~/.element/config.toml",
+        ],
+    ),
+];
+
+fn help_view() -> Element<'static, Message> {
+    let title = text("Help")
+        .color(theme::TEXT_PRIMARY)
+        .size(theme::TITLE_SIZE)
+        .width(Length::Fill);
+
+    let back = button(text("← Back"))
+        .on_press(Message::HelpBack)
+        .style(accent_button_style)
+        .padding([4.0, 10.0]);
+
+    let header = row![title, back]
+        .padding([8.0, theme::CONTENT_PADDING_SIDES])
+        .align_y(iced::Alignment::Center);
+
+    let mut list = Column::new().spacing(theme::SPACING_SM);
+    for &(section, lines) in HELP_SECTIONS {
+        let mut block = Column::new().spacing(2.0);
+        block = block.push(
+            text(section)
+                .color(theme::TEXT_PRIMARY)
+                .size(theme::TITLE_SIZE),
+        );
+        for &line in lines {
+            block = block.push(
+                text(line)
+                    .color(theme::TEXT_MUTED)
+                    .size(theme::SUBTITLE_SIZE),
+            );
+        }
+        list = list.push(
+            container(block)
+                .padding([6.0, theme::CONTENT_PADDING_SIDES])
+                .width(Length::Fill),
+        );
+    }
+
+    let scroll = iced::widget::Scrollable::new(list)
+        .id(scrollable::Id::new(HELP_SCROLL_ID))
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .style(element_scrollable_style);
+
+    let hint = text("Escape or Backspace returns to search")
+        .color(theme::TEXT_MUTED)
+        .size(theme::SUBTITLE_SIZE);
+    let footer = container(hint)
+        .padding([8.0, theme::CONTENT_PADDING_SIDES])
+        .width(Length::Fill);
+
+    container(column![header, scroll, footer].width(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
         .style(element_container_style)
         .into()
 }
