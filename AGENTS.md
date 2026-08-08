@@ -32,6 +32,9 @@ src/
 │                     #          RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH,
 │                     #          WINDOW_FOUND, LAUNCHER_SHOWN, LAST_TOGGLE_MS,
 │                     #          LAUNCHER_HWND, LAUNCHER_LAST_SHOWN_MS, AUTO_HIDDEN_AT
+│                     # Tray proc also handles WM_APP_TIMER_DONE (0x8001, timer
+│                     #   balloon) and WM_APP_SCREENSHOT_DONE (0x8002, screenshot
+│                     #   toast — wparam owns a boxed String body).
 │
 ├── orchestrator.rs   # Orchestrator — the single entry point for user requests.
 │                     # handle(Request) → Outcome: Search(query) → Results,
@@ -48,12 +51,26 @@ src/
 │                     # Migrates from legacy config.json on first run.
 │                     # pub(crate) fn data_dir() shared by database.rs.
 │                     # Hotkey parsing: parse_hotkey(), hotkey_fallback_candidates().
+│                     # clipboard_newest_first (default true) seeds the clipboard
+│                     #   sort direction; the settings panel flips it live.
 │
 ├── database.rs       # SQLite via rusqlite (bundled). Mutex<Connection>.
 │                     # Tables: clipboard_entries (pinned flag), clipboard_images
 │                     #          (hash UNIQUE, path, width/height, pinned),
 │                     #          emoji_frecency, frecency, file_frecency.
-│                     # Methods: load_clipboard, save_clipboard (dedupe/trim),
+│                     # Methods: load_clipboard_filtered(limit, text_like,
+│                     #          date_from, date_to, newest_first) — positional
+│                     #          params numbered sequentially; sort is
+│                     #          (pinned DESC, id DESC/ASC) because two rows
+│                     #          captured in the same second share created_at
+│                     #          (UTC, second resolution). load_clipboard /
+│                     #          load_clipboard_images return (…, pinned, id)
+│                     #          and are #[cfg(test)] wrappers now.
+│                     #          load_clipboard_images_filtered(limit,
+│                     #          date_from, date_to, newest_first); local_date
+│                     #          (days_offset) computes local dates in SQLite
+│                     #          (SELECT date('now','localtime',?1)) — no chrono.
+│                     #          save_clipboard (dedupe/trim),
 │                     #          toggle_clipboard_pinned, load/save_clipboard_images
 │                     #          (dedupe by hash, trim removes cached files),
 │                     #          toggle_clipboard_image_pinned, record_emoji_use,
@@ -105,10 +122,18 @@ src/
 │   │                 #   records usage via record_emoji_use.
 │   ├── clipboard/    # SQLite clipboard tables. should_run: "cbhist" or "clip".
 │   │   └── mod.rs    #   Text + image entries merged by (pinned, recency).
-│   │                 #   Pinned rows sort first and show 📌 ("· pinned" subtitle).
-│   │                 #   Image rows: kind "clipboard-image", 64×64 thumb PNG
-│   │                 #   decoded into icon_rgba; Enter restores the image to
-│   │                 #   the clipboard as CF_DIB (rgba_to_dib + set_clipboard_bitmap).
+│   │                 #   Newest first by default (NEWEST_FIRST AtomicBool,
+│   │                 #   seeded from config + flipped live by the settings
+│   │                 #   panel); sort is (pinned, id) so same-second captures
+│   │                 #   keep capture order. Query grammar after the trigger:
+│   │                 #   today / yesterday / YYYY-MM-DD / last Nd filter by
+│   │                 #   local date (db.local_date), sort:new / sort:old
+│   │                 #   override the order, any remaining words are a text
+│   │                 #   LIKE filter (escaped). Pinned rows sort first and
+│   │                 #   show 📌 ("· pinned" subtitle). Image rows: kind
+│   │                 #   "clipboard-image", 64×64 thumb PNG decoded into
+│   │                 #   icon_rgba; Enter restores the image to the clipboard
+│   │                 #   as CF_DIB (rgba_to_dib + set_clipboard_bitmap).
 │   ├── system/       # System commands + everyday quick actions. should_run:
 │   │   └── mod.rs    #   shutdown/restart/reboot(alias)/sleep/lock/volume/mute/
 │   │                 #   screen off/timer/password/screenshot at command start
@@ -119,6 +144,9 @@ src/
 │   │                 #   post WM_APP_TIMER_DONE (0x8001) to the tray window which
 │   │                 #   shows a balloon; BCryptGenRandom for passwords
 │   │                 #   (kind "password" keeps the window open w/ feedback).
+│   │                 #   Screenshot saves the PNG to Pictures\Screenshots and
+│   │                 #   notifies the tray via platform::notify_screenshot_captured
+│   │                 #   (WM_APP_SCREENSHOT_DONE 0x8002) → toast + status row.
 │   ├── files/        # Raycast-style file search. Runs on "file"/"folder" prefixes
 │   │                 # AND on bare queries (≥2 chars, not emoji/clipboard/math
 │   │                 # domains) so typing ".png" or "pvt" finds files directly.
@@ -145,12 +173,18 @@ src/
 │                     # (CF_HDROP), lock_workstation, suspend_system,
 │                     # clipboard_bitmap_bytes (CF_DIB/DIBV5/PNG capture),
 │                     # set_clipboard_bitmap, dib_to_rgba / rgba_to_dib.
+│                     # Tray notifications: WM_APP_SCREENSHOT_DONE (0x8002) +
+│                     # notify_screenshot_captured(body) — posts a boxed String
+│                     # to the tray window; show_toast for custom toasts.
 │
 └── ui/
     └── mod.rs        # Iced views. Search TextInput, scrollable results list,
                       # status row for activation feedback, contextual hint row
-                      # (files: Alt+C/F/Enter; clipboard: right-click to pin),
-                      # settings + help panels (Mode enum; Esc/Back leaves).
+                      # (files: Alt+C/F/Enter; clipboard: right-click to pin +
+                      # date/sort tokens), settings + help panels (Mode enum;
+                      # Esc/Back leaves). Settings includes the clipboard
+                      # order picker (flips the provider's NEWEST_FIRST static
+                      # live) plus width/URL/accent/autostart/index limits.
                       # Sends Request to the Orchestrator via engine.handle(Request)
                       # and matches Outcome.
 ```
@@ -366,7 +400,7 @@ App search multiplies score by: `1.0 + (frecency_score × 5.0)`, capped at 3×.
 ```bash
 cargo build              # debug build
 cargo build --release    # release (slow — LTO takes ~5min)
-cargo test               # 74 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard pinning/dedupe, emoji frecency, system commands, help, files, URL encoding, web prefixes)
+cargo test               # 101 tests (fuzzy, frecency, app-result deduplication, calc, config, clipboard pinning/dedupe/order/date-text filters, emoji frecency, system commands, help, files, URL encoding, web prefixes)
 cargo fmt                # format
 cargo clippy -- -D warnings   # lint (blocking on CI)
 

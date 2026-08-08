@@ -30,11 +30,13 @@ Element is a global hotkey-activated floating search bar for Windows. Press **Al
 - **Web search** — Fallback that opens your browser with the configured search URL.
 - **Calculator** — Type `2+2`, `(3*4)/2`, press Enter to copy result to clipboard.
 - **Emoji search** — Type `emoji` or `:` followed by a search term.
-- **Clipboard history** — Type `cbhist` or `clip` to browse recent clipboard entries from SQLite.
+- **Clipboard history** — Type `cbhist` or `clip` to browse recent clipboard entries (text + images) from SQLite, newest first. Filter by date (`clip today`, `clip yesterday`, `clip 2026-08-05`, `clip last7d`), search by text (`clip password`), or flip the order (`sort:old`). Right-click a row to pin it.
 - **File & folder search** — Raycast-style: type `file <name>` or `folder <name>` to fuzzy-match files/folders in your curated user folders (Desktop, Documents, Downloads, ... — or `file_search_dirs` in config) and open them with their default handler.
 - **Unit conversion** — Type `5 km in miles`, `100 c in f`, `2 liters to gallons`; Enter copies the result. Length, mass, volume, speed, data, time, temperature.
+- **Color / snippets** — `#ff0000` converts hex/rgb/hsl and copies the selected variant; `snip` lists ~/.element/snippets.toml entries, typing a name copies it.
+- **System commands** — `shutdown`, `restart`, `sleep`, `lock`, `volume 40` / `mute`, `screen off`, `timer 10`, `password`, and `screenshot` (captures all monitors to the clipboard, writes `Pictures\Screenshots`, and shows a toast).
 - **Keyboard navigation** — Arrow keys, `Ctrl+P`/`Ctrl+N` (vim motions), `Ctrl+1..9` to jump straight to a result.
-- **Settings panel** — Type `settings` and press Enter: window width slider, search engine URL, accent color (6 swatches), run-at-startup toggle. Changes apply live and save to `config.toml`.
+- **Settings panel** — Type `settings` and press Enter: window width slider, search engine URL, accent color (6 swatches), run-at-startup toggle, clipboard order, file-index depth/entries. Changes apply live and save to `config.toml`.
 - **Always-on-top overlay** — Borderless, centered, dark theme.
 
 ## Architecture
@@ -49,11 +51,12 @@ element/
 │   └── PULL_REQUEST_TEMPLATE.md
 ├── src/
 │   ├── main.rs        # Entry point: RegisterHotKey + PeekMessageW loop,
-│   │                  #   hidden tray window, Iced bootstrap
+│   │                  #   hidden tray window, clipboard watcher, Iced bootstrap
 │   ├── orchestrator.rs # Orchestrator: handle(Request) → Outcome, owns providers
 │   ├── config.rs      # TOML config with JSON migration, shared data_dir()
 │   ├── database.rs    # SQLite — clipboard_entries + frecency tables
 │   ├── error.rs       # ElementError enum (thiserror)
+│   ├── platform.rs    # Win32 helpers (clipboard, volume, screenshots, toasts)
 │   ├── registry.rs    # ProviderRegistry: catch_unwind isolation per provider
 │   ├── theme.rs       # Named color/spacing/radius tokens
 │   ├── hotkey/        # Global hotkey detection (RegisterHotKey → LL hook → fallbacks)
@@ -63,9 +66,15 @@ element/
 │   │   ├── icon.rs       # Shared icon pipeline for any shell path
 │   │   ├── apps/         # Installed-app scan + fuzzy match + frecency + icons
 │   │   ├── calculator/   # evalexpr expression evaluator
+│   │   ├── color/        # #hex → hex/rgb/hsl with rendered swatch
+│   │   ├── units/        # Unit conversion (5 km in miles)
+│   │   ├── snippets/     # Quick text insertions from snippets.toml
+│   │   ├── settings/     # In-launcher settings panel (UI intercepts)
+│   │   ├── help/         # In-launcher manual (UI intercepts)
 │   │   ├── emoji/        # emojis crate search
-│   │   ├── clipboard/    # Clipboard history from SQLite
+│   │   ├── clipboard/    # Clipboard history from SQLite (searchable, sortable)
 │   │   ├── files/        # File/folder search ("file"/"folder" prefixes)
+│   │   ├── system/       # System commands (shutdown, volume, screenshot, ...)
 │   │   └── websearch/    # Web search fallback (always at bottom)
 │   └── ui/
 │       └── mod.rs     # Iced views (uses theme.rs tokens)
@@ -99,9 +108,16 @@ Search results are scored and sorted descending:
 | Provider | Score |
 |----------|-------|
 | Calculator | 1000 (always on top) |
+| Units | 900 |
+| Color | 950/940/930 (explicit `#hex` intent) |
+| Web URL passthrough | 850 (typed destination) |
+| Web prefix shortcuts (`yt …`) | 800 (explicit intent) |
+| Snippets | 700 exact name, 500 listing |
+| Settings / Help panels | 1000 (UI intercepts and switches mode) |
 | Emoji | 500 - index (decaying, up to 20) |
 | Apps | fuzzy_score × frecency_boost |
 | Clipboard | 200 |
+| System commands | 300 |
 | Files | 120 + fuzzy × 2 (+10 folders); recs 210 (roots); bare queries 10 + fuzzy × 0.5, cap 6 |
 | Web search | -1 (always last) |
 
@@ -115,6 +131,7 @@ query → ProviderRegistry
   ├─ Emoji       → should_run(":smile")? yes → search
   ├─ Clipboard   → should_run("cbhist")? yes → search
   ├─ Files       → should_run("file x")? yes → fuzzy match home index
+  ├─ System      → should_run("volume")? yes → quick action
   ├─ Apps        → should_run(_) = true → fuzzy match + frecency
   └─ Web search  → should_run(_) = true → construct URL
        ↓
@@ -157,7 +174,7 @@ pub struct SearchResult {
 
 ### Hotkey system
 
-Background thread registers `RegisterHotKey(NULL, 1, MOD_ALT|MOD_NOREPEAT, VK_SPACE)` and runs a `PeekMessageW` loop with 50ms sleep when idle. On `WM_HOTKEY`, it shows/centers the Iced window via `FindWindowW` / `ShowWindow` / `SetWindowPos`. Atomic flags communicate between the thread and Iced's `update` function — no CPU wasted on polling.
+Background thread registers `RegisterHotKey(NULL, 1, MOD_ALT|MOD_NOREPEAT, VK_SPACE)` and runs a `PeekMessageW` loop with 50ms sleep when idle. On `WM_HOTKEY`, it shows/centers the Iced window. The own window is found with PID-based `EnumWindows` (not title lookup); atomic flags communicate between the thread and Iced's `update` function — no CPU wasted on polling. If `RegisterHotKey` fails, a `WH_KEYBOARD_LL` hook intercepts the key before the competing app, then fallback combos.
 
 ### Tray icon
 
@@ -173,6 +190,7 @@ All persistent data lives under `~/.element/`. Single source of truth in `config
 - `config.toml` — user configuration
 - `element.db` — SQLite database (frecency + clipboard history)
 - `cache/icons/*.png` — cached app icons
+- `cache/clipboard/*.png` — captured clipboard images (full + thumbnail)
 
 ### Adaptive height
 
@@ -226,6 +244,7 @@ search_url = "https://duckduckgo.com/search?q=%s"
 search_dirs = []
 file_search_dirs = []
 clipboard_max_entries = 100
+clipboard_newest_first = true
 ```
 
 | Key | Description |
@@ -238,6 +257,7 @@ clipboard_max_entries = 100
 | `search_dirs` | Additional directories to scan recursively for Start Menu-style `.lnk` applications |
 | `file_search_dirs` | Directories indexed for file/folder search; empty = curated user folders (Desktop, Documents, Downloads, Pictures, Music, Videos) |
 | `clipboard_max_entries` | Maximum clipboard history entries shown |
+| `clipboard_newest_first` | Clipboard history order: `true` = newest first (default), `false` = oldest first; overridable per query with `sort:new` / `sort:old` |
 
 ## Usage
 
@@ -256,7 +276,7 @@ clipboard_max_entries = 100
 ```bash
 cargo build              # debug build
 cargo build --release    # release build (slow with LTO)
-cargo test               # run all 40 tests
+cargo test               # run all 101 tests
 cargo fmt                # format code
 cargo clippy -- -D warnings  # lint (blocking on CI)
 ```

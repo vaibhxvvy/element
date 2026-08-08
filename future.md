@@ -147,3 +147,4 @@ Track each build session here (date → what got built → version).
 |------|---------|--------------|
 | 2026-08-08 | — | Tracker created; Everyday commands : volume, screen off, timer, password, screenshot (in progress) |
 | 2026-08-08 | v1.4.0 (unreleased) | Everyday quick actions built: `volume`/`mute`, `screen off`, `timer` (tray notification), `password` (BCrypt random), `screenshot` (virtual desktop → clipboard). 96 tests passing |
+| 2026-08-08 | v1.4.0 (unreleased) | Iced 0.14 (wgpu) migration (boot-first application, operation tasks, listen_with); fixed watcher skipping image captures and screenshot double-encode. Then clipboard history: stable newest-first order (id tie-break), `clipboard_newest_first` config + live settings picker, date filters (`today`/`yesterday`/`YYYY-MM-DD`/`last Nd`) + text filter + `sort:new`/`sort:old`; `screenshot` shows a "captured" toast (WM_APP_SCREENSHOT_DONE). 101 tests passing |

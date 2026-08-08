@@ -1,13 +1,13 @@
 # Element — Living State Document
 
-> **Last updated:** 2026-08-06 (Phase 16 — module/domain split: Orchestrator, feature folders; file branch — shared fuzzy/icon modules + files provider
+> **Last updated:** 2026-08-08 (Phase 18+ — Iced 0.14 migration, clipboard search/order, screenshot toast)
 > **Purpose:** Single source of truth for architecture decisions, project state, and next moves.
 
 ---
 
 ## 1. Objective
 
-Build **Element**: a Raycast-style global launcher for Windows, written in Rust with **Iced 0.13** (wgpu backend) for GPU-accelerated retained-mode UI.
+Build **Element**: a Raycast-style global launcher for Windows, written in Rust with **Iced 0.14** (wgpu backend) for GPU-accelerated retained-mode UI.
 
 Core interaction: `Alt+Space` → floating search bar with app recommendations → type to search across apps/web/calc/emoji/clipboard → Enter to act.
 
@@ -17,7 +17,7 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| UI Framework | **Iced 0.13** (wgpu) | Retained-mode, native GPU, composable widgets, subscriptions. |
+| UI Framework | **Iced 0.14** (wgpu) | Retained-mode, native GPU, composable widgets, subscriptions. 0.14: boot-first `iced::application`, `widget::operation` tasks, unified `widget::Id`, `event::listen_with`. |
 | Windowing | Iced (winit backend) | Borderless, always-on-top, starts hidden. |
 | Global Hotkey | `RegisterHotKey` + `PeekMessageW` loop | No CPU polling. Background thread sleeps when idle, wakes on message. |
 | Hotkey Fallback | **WH_KEYBOARD_LL** hook | When RegisterHotKey fails, LL hook intercepts key before competing app sees it. Three tiers: RegisterHotKey → LL hook → fallback combos. |
@@ -41,11 +41,12 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 | Web search | `webbrowser` crate | Opens configured `search_url` with query substituted for `%s`. |
 | Calculator | `evalexpr = "11"` | Detects math expressions, evaluates, copies result. |
 | Emoji | `emojis = "0.6"` | Search by name or shortcode on `emoji`/`:` prefix. |
-| Clipboard | Win32 clipboard API (copy only) | Copy results to clipboard via OpenClipboard/SetClipboardData. |
-| Clipboard DB | `rusqlite` (bundled) | `clipboard_entries` table in `~/.element/element.db`. |
+| Clipboard | Win32 clipboard API + watcher thread (800 ms poll) | Copy/restore results and capture history (text + images) into SQLite. |
+| Clipboard DB | `rusqlite` (bundled) | `clipboard_entries` + `clipboard_images` tables in `~/.element/element.db`; local-date filters computed in SQLite (`date('now','localtime',?)`). |
+| Screenshot toast | `WM_APP_SCREENSHOT_DONE` (0x8002) → tray window | `screenshot` posts a boxed String body; the tray proc shows it via `show_toast` and sets the UI status row. |
 | Window centering | `SetWindowPos` post-show | Centered horizontally, ⅓ from top of primary monitor. |
 | Window effects | **DWM rounded corners** (DWMWCP_ROUND) | Solid #3c3c3c bg + small-radius corners avoids DWM acrylic fragility. |
-| Testing | `cargo test` (50 tests) | Fuzzy scorer, calculator, config, clipboard, frecency, files, URL encoding. |
+| Testing | `cargo test` (101 tests) | Fuzzy scorer, calculator, config, clipboard (dedupe/pinning/order/date-text filters), frecency, files, URL encoding, system commands. |
 | Debug logging | File-based (`~/.element/debug.log`) | Timestamped output via `debug_log!` macro; enabled in debug builds or ELEMENT_DEBUG=1. |
 | Agent reference | `AGENTS.md` | Canonical doc for AI agents — architecture, provider system, design decisions. |
 | Living Doc | `ELEMENT_STATE.md` | This file. |
@@ -58,13 +59,16 @@ Core interaction: `Alt+Space` → floating search bar with app recommendations �
 element/
 ├── src/
 │   ├── main.rs        # Entry point: RegisterHotKey + PeekMessageW loop, LL hook fallback,
-│   │                  #   single-instance guard, PID-based EnumWindows, tray window, Iced bootstrap
+│   │                  #   single-instance guard, PID-based EnumWindows, tray window,
+│   │                  #   clipboard watcher thread, Iced bootstrap
 │   ├── orchestrator.rs # Orchestrator: single entry point — handle(Request) → Outcome;
 │   │                  #   owns Arc<Config> + Arc<Database> + ProviderRegistry, registers providers
 │   ├── config.rs      # TOML config with JSON migration, shared data_dir(), hotkey parsing
-│   ├── database.rs    # SQLite — clipboard_entries + frecency tables
+│   ├── database.rs    # SQLite — clipboard_entries + clipboard_images + frecency tables
 │   ├── debug_log.rs   # File-based debug logger (~/.element/debug.log)
 │   ├── error.rs       # ElementError enum (thiserror)
+│   ├── platform.rs    # Win32 helpers: clipboard (CF_HDROP/DIB), lock/suspend, volume,
+│   │                  #   screen capture, tray notifications (WM_APP_*)
 │   ├── registry.rs    # ProviderRegistry: iterates providers, catch_unwind isolation
 │   ├── theme.rs       # Named color/spacing/radius tokens (dark palette #3c3c3c)
 │   ├── hotkey/        # Global hotkey detection (RegisterHotKey → LL hook → fallbacks)
@@ -78,18 +82,22 @@ element/
 │   │   │   ├── scan.rs   #   Start Menu scan (walkdir, .lnk → exe, dedup)
 │   │   │   └── icons.rs  #   Shortcut layer: .lnk resolution + .ico preference
 │   │   ├── calculator/   # evalexpr-based calculator
-│   │   │   └── mod.rs
-│   │   ├── emoji/        # Emoji search via emojis crate
-│   │   │   └── mod.rs
-│   │   ├── clipboard/    # Clipboard history from SQLite
-│   │   │   └── mod.rs
+│   │   ├── color/        # #hex → hex/rgb/hsl with rendered swatch
+│   │   ├── units/        # Unit conversion (5 km in miles)
+│   │   ├── snippets/     # Quick text insertions from ~/.element/snippets.toml
+│   │   ├── settings/     # In-launcher settings panel (UI intercepts kind=="settings")
+│   │   ├── help/         # In-launcher manual (UI intercepts kind=="help")
+│   │   ├── emoji/        # Emoji search via emojis crate (+ frecency boost)
+│   │   ├── clipboard/    # Clipboard history (text + images): newest-first order,
+│   │   │   └── mod.rs    #   date/text filters, sort:new/sort:old, pinning
 │   │   ├── files/        # Raycast-style file/folder search ("file"/"folder" prefixes)
 │   │   │   ├── mod.rs    #   FilesProvider: prefix parsing, fuzzy names, lazy icons, explorer.exe
 │   │   │   └── scan.rs   #   Walk of curated user folders: exclusions, caps
-│   │   └── websearch/    # Web search fallback (always at bottom)
-│   │       └── mod.rs
+│   │   ├── system/       # System commands: shutdown/sleep/lock/volume/screen off/timer/password/screenshot
+│   │   └── websearch/    # Web search fallback (always at bottom) + URL passthrough + prefixes
 │   └── ui/
-│       └── mod.rs     # Iced views: search bar, result rows with icons, status feedback
+│       └── mod.rs     # Iced views: search bar, result rows with icons, status feedback,
+│                      #   settings + help panels
 ├── brandkit/          # Brand assets
 ├── Cargo.toml
 ├── README.md
@@ -194,6 +202,11 @@ Iced view:
 - **ELEMENT_STATE.md** updated with new tech stack entries, architecture, and risk mitigations.
 - **Module/domain split (Phase 16)**: `app.rs` → `orchestrator.rs` with `Request`/`Outcome` API; `hotkey.rs` → `hotkey/` folder; providers split into per-feature folders (`apps/{mod,scan,icons}`, `calculator/`, `emoji/`, `clipboard/`, `files/`, `websearch/`); `SearchResult` moved into `providers/mod.rs`. UI routes all actions through `engine.handle(Request)`.
 - **File search (Phase 17)**: shared `providers/fuzzy.rs` (moved out of apps) and `providers/icon.rs` (generic path extraction) extracted; new `files/` provider with `file`/`folder` prefix gating, background index of curated user folders (`file_search_dirs` config, junk exclusions incl. version dirs/Android dumps, depth/entry caps), lazy icons via revision loop, `explorer.exe` activation, root-folder recommendations on empty query. 13 new tests (prefix parsing, folder mode, exclusions, ranking, root recs).
+- **v1.3.0 — Clipboard image history**: watcher captures bitmaps (DIB/DIBV5/PNG) to `cache/clipboard/` full+thumb PNGs, pixel-hash dedupe, 16 MB cap; images shown as 64×64 thumbs in history, Enter restores to clipboard as CF_DIB; pinning for both text and image rows; trimming removes cached files.
+- **v1.4.0 — Everyday quick actions**: `volume`/`mute` (Core Audio), `screen off`, `timer` (tray balloon via `WM_APP_TIMER_DONE`), `password` (BCryptGenRandom), `screenshot` (all-monitor GDI capture → clipboard CF_DIB + PNG to `Pictures\Screenshots`). 5 live smoke tests (`--ignored`).
+- **Iced 0.14 migration**: boot-first `iced::application`, `widget::operation` tasks for focus/scroll, unified `widget::Id`, `event::listen_with` subscription, `Theme::Dark` value, 0.14 widget APIs (checkbox/pick_list/scrollable style types). Migration found and fixed two real bugs: clipboard watcher skipped image capture when the clipboard held an image; screenshot double-encoded the frame PNG.
+- **Clipboard ordering + search (v1.4.0)**: history sorts by `(pinned, id)` — same-second captures keep capture order (was: alphabetical tie-break put the newest second); `clipboard_newest_first` config + live "Clipboard order" settings picker (`NEWEST_FIRST` static); query grammar `today` / `yesterday` / `YYYY-MM-DD` / `last Nd` (local dates via SQLite) and a text LIKE filter; `sort:new`/`sort:old` per-query override.
+- **Screenshot toast (v1.4.0)**: `platform::notify_screenshot_captured` posts `WM_APP_SCREENSHOT_DONE` (0x8002) with a boxed String to the tray window → `show_toast` + UI status row.
 
 ### Known issues
 
@@ -206,11 +219,11 @@ Iced view:
 
 ## 5. Next Moves
 
-1. Manually smoke-test: Alt+Space toggle, app launch, calculator, emoji, clipboard, websearch, tray icon, single-instance, hotkey conflict recovery.
-2. File search provider (index user directories, `.gitignore`-style filtering).
-3. Clipboard monitor (watch OS clipboard, auto-store in SQLite).
-4. Persistent app refresh worker (periodic background scan without blocking overlay).
-5. Plugin system (custom shell scripts / WASM plugins).
+1. Smoke-test v1.4.0 on a real desktop: clipboard `clip today`/`sort:old`/text filter, screenshot toast, timer balloon, settings clipboard-order picker.
+2. Snippets that type anywhere (low-level keyboard hook typing into the focused app).
+3. Wi-Fi / Bluetooth / brightness (WinRT helper layer).
+4. Window switcher / tab finder (WindowStation APIs).
+5. Plugin system (custom shell scripts / WASM plugins) when 8+ providers overlap.
 
 ---
 

@@ -334,3 +334,32 @@ cargo build --release   # release build succeeds
 - Window centered at fixed position (primary monitor only)
 - No file search provider yet
 - No clipboard monitor (OS clipboard watch)
+## 2026-08-08 Session (3) — Iced 0.14 migration + clipboard search & ordering + screenshot toast
+
+### Iced 0.14 (wgpu) migration
+
+Upgraded iced 0.13 → 0.14 with a rewrite pass over `main.rs` (bootstrap) and `ui/mod.rs` (widgets):
+
+- `iced::application(boot, update, view)` boot-first API; the boot closure must be `Fn` (not FnOnce) so the `Orchestrator` Arc-clones are shared; `.theme(Theme::Dark)` passed as a value (a `|_| Theme::Dark` closure hits an HRTB error).
+- Focus/scroll now use `widget::operation` tasks: `operation::focus(Id::new("search"))` + `operation::scroll_to(list_id, AbsoluteOffset::Absolute(px))`; unified `widget::Id` (`Id::new(&'static str)`, `From<&'static str>`).
+- `event::listen_with` subscription (0.14 TextInput captures Escape; raw-key subscription alone no longer receives it).
+- 0.14 widget API changes: `checkbox(new_value).label(..).on_toggle(f)` builder, `pick_list(options, selected, on_selected)` helper, `scrollable::Style`/`Rail`/`Scroller` style fields, `iced::Shadow`/`Border` exports.
+- **Found + fixed two real bugs during the port:**
+  1. Clipboard watcher: `let Ok(Some(text)) = ... else { continue; }` bailed out whenever the clipboard held an image — screenshots/pictures were never captured. Text is now read optionally; image capture runs every poll.
+  2. Screenshot latency: the frame was PNG-encoded twice (clipboard + file). `save_screenshot_png` now takes the already-encoded PNG.
+
+### Clipboard history: stable order + search + sort option
+
+- Newest-first was broken for same-second captures: rows tied on `created_at` (UTC, second resolution) and fell back to alphabetical title order. Now the merged sort is `(pinned, id) DESC` — `id` is capture order, so same-second rows stay in capture order. DB layer: `load_clipboard_filtered(limit, text_like, date_from, date_to, newest_first)` + `load_clipboard_images_filtered`; old `load_clipboard`/`load_clipboard_images` are now `#[cfg(test)]` wrappers.
+- Local dates computed in SQLite (`SELECT date('now','localtime', ?1)` with `"+N days"` modifiers) — no chrono. Query grammar after `cbhist`/`clip`: `today`, `yesterday`, `YYYY-MM-DD`, `last Nd`, `sort:new`/`sort:old`, plus a text LIKE filter (escaped `%`/`_`).
+- `clipboard_newest_first` config (default true) seeds a `NEWEST_FIRST` static; the settings panel picker flips it live (the Arc<Config> is not reloaded on save, so live settings use statics). 5 new tests; rusqlite positional params numbered sequentially via a running counter.
+
+### Screenshot toast
+
+`platform::notify_screenshot_captured(body)` boxes a String into `WM_APP_SCREENSHOT_DONE` (0x8002) `wparam` and posts it to the tray window (`TRAY_HWND`); the tray proc recovers it (`Box::from_raw`), shows `show_toast("Element", body)` and sets the UI status row.
+
+### Verification
+
+- `cargo build -j 2` (8 GB RAM machine OOMs at default parallelism), `cargo test -j 2` → 101 passed / 3 ignored, `cargo clippy -j 2 -- -D warnings` clean, `cargo fmt --check` clean.
+- Live smoke: app runs; clipboard image + text captures verified in `element.db` (image row ordered before text rows); settings/clipboard UI wired.
+- Commits: `daabd2d` (migration + watcher/screenshot fixes), `02cbf43` (clipboard order/search/sort + screenshot toast).
