@@ -206,6 +206,23 @@ pub fn set_tray_hwnd(hwnd: isize) {
 /// finishes; `wparam` carries the total seconds.
 pub const WM_APP_TIMER_DONE: u32 = 0x8001;
 
+/// Custom message the UI posts to the tray window when a screenshot capture
+/// finished; `wparam` owns a boxed `String` toast body that the tray window
+/// reads and frees.
+pub const WM_APP_SCREENSHOT_DONE: u32 = 0x8002;
+
+/// Ask the tray window to show a "screenshot captured" toast. Safe to call
+/// from the UI thread: the body is boxed and handed to the tray window,
+/// which shows it and frees the box.
+pub fn notify_screenshot_captured(body: String) {
+    let hwnd = TRAY_HWND.load(Ordering::SeqCst);
+    if hwnd == 0 {
+        return;
+    }
+    let ptr = Box::into_raw(Box::new(body)) as usize;
+    unsafe { PostMessageW(hwnd, WM_APP_SCREENSHOT_DONE, ptr, 0) };
+}
+
 /// Start a countdown; when it elapses the tray window shows a notification.
 pub fn start_timer(seconds: u32) -> Result<(), String> {
     if TRAY_HWND.load(Ordering::SeqCst) == 0 {

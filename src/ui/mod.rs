@@ -3,8 +3,8 @@ use std::sync::atomic::Ordering;
 use iced::keyboard::{key, Key, Modifiers};
 use iced::time::Duration;
 use iced::widget::{
-    button, checkbox, column, container, mouse_area, row, scrollable, slider, text, text_input,
-    Column,
+    button, checkbox, column, container, mouse_area, pick_list, row, scrollable, slider, text,
+    text_input, Column,
 };
 use iced::{Color, Element, Length, Subscription, Theme};
 
@@ -45,6 +45,7 @@ pub struct SettingsDraft {
     pub autostart: bool,
     pub file_index_depth: usize,
     pub file_index_entries: usize,
+    pub clipboard_newest_first: bool,
 }
 
 /// Build a settings draft from a config — used when opening the panel and
@@ -56,6 +57,7 @@ fn draft_from_config(cfg: &Config) -> SettingsDraft {
         autostart: cfg.autostart,
         file_index_depth: cfg.file_index_depth,
         file_index_entries: cfg.file_index_entries,
+        clipboard_newest_first: cfg.clipboard_newest_first,
     }
 }
 
@@ -72,6 +74,7 @@ pub enum Message {
     SearchUrlChanged(String),
     AccentChanged(String),
     AutostartChanged(bool),
+    ClipboardSortChanged(bool),
     FileDepthChanged(f32),
     FileEntriesChanged(f32),
     ResetSettings,
@@ -129,7 +132,9 @@ fn refresh_hint(app: &mut ElementApp) {
             "files" => {
                 Some("Enter open  ·  Alt+C copy path  ·  Alt+F copy file  ·  Alt+Enter reveal")
             }
-            "clipboard" | "clipboard-image" => Some("Enter copy  ·  Right-click to pin"),
+            "clipboard" | "clipboard-image" => Some(
+                "Enter copy  ·  Right-click to pin  ·  today / yesterday / 2026-08-05 / last7d / sort:new",
+            ),
             _ => None,
         })
         .map(str::to_string);
@@ -267,6 +272,7 @@ fn save_settings(app: &ElementApp) {
     cfg.autostart = app.settings.autostart;
     cfg.file_index_depth = app.settings.file_index_depth;
     cfg.file_index_entries = app.settings.file_index_entries;
+    cfg.clipboard_newest_first = app.settings.clipboard_newest_first;
     cfg.save();
     debug_log!("UI: settings saved");
 }
@@ -327,6 +333,11 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
         Message::AutostartChanged(enabled) => {
             app.settings.autostart = enabled;
             crate::set_autostart(enabled);
+            return iced::Task::none();
+        }
+        Message::ClipboardSortChanged(newest) => {
+            app.settings.clipboard_newest_first = newest;
+            crate::providers::clipboard::set_newest_first(newest);
             return iced::Task::none();
         }
         Message::FileDepthChanged(depth) => {
@@ -725,6 +736,18 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
         .text_size(theme::TITLE_SIZE);
     let autostart_row = settings_row("Startup", autostart.into());
 
+    let sort_options: [&str; 2] = ["Newest first", "Oldest first"];
+    let sort_selected = if app.settings.clipboard_newest_first {
+        sort_options[0]
+    } else {
+        sort_options[1]
+    };
+    let sort_pick = pick_list(sort_options, Some(sort_selected), |v| {
+        Message::ClipboardSortChanged(v == "Newest first")
+    })
+    .padding([4.0, 10.0]);
+    let sort_row = settings_row("Clipboard order", sort_pick.into());
+
     let depth_value = text(format!("{} levels", app.settings.file_index_depth))
         .color(theme::TEXT_PRIMARY)
         .size(theme::SUBTITLE_SIZE)
@@ -787,6 +810,7 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
         url_row,
         accent_row,
         autostart_row,
+        sort_row,
         depth_row,
         entries_row,
         hotkey_row,

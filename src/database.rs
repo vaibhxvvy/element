@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, Connection};
 use std::sync::Mutex;
 
 use crate::config;
@@ -67,26 +67,79 @@ impl Database {
         path
     }
 
-    /// Clipboard history: `(text, created_at, pinned)`, pinned entries first,
-    /// then newest first.
-    pub fn load_clipboard(&self, limit: usize) -> Vec<(String, String, bool)> {
+    /// Clipboard history: `(text, created_at, pinned, id)`, pinned entries
+    /// first, then newest first. `id` is the stable capture order — two rows
+    /// captured within the same second share a `created_at`, so sorting by
+    /// timestamp alone can put the newest entry second. (Test helper; the
+    /// provider uses [`Self::load_clipboard_filtered`].)
+    #[cfg(test)]
+    pub fn load_clipboard(&self, limit: usize) -> Vec<(String, String, bool, i64)> {
+        self.load_clipboard_filtered(limit, None, None, None, true)
+    }
+
+    /// Clipboard history with optional text (LIKE) and local-date-range
+    /// filters. `date_from`/`date_to` are `YYYY-MM-DD` strings (see
+    /// [`Self::local_date`]); `newest_first` flips the id order.
+    pub fn load_clipboard_filtered(
+        &self,
+        limit: usize,
+        text_like: Option<&str>,
+        date_from: Option<&str>,
+        date_to: Option<&str>,
+        newest_first: bool,
+    ) -> Vec<(String, String, bool, i64)> {
         let conn = match self.conn.lock() {
             Ok(c) => c,
             Err(_) => return vec![],
         };
-        let mut stmt = match conn.prepare(
-            "SELECT text_content, created_at, pinned FROM clipboard_entries WHERE text_content IS NOT NULL ORDER BY pinned DESC, id DESC LIMIT ?1"
-        ) {
+        let order = if newest_first { "DESC" } else { "ASC" };
+        let mut sql = "SELECT text_content, created_at, pinned, id \
+                       FROM clipboard_entries WHERE text_content IS NOT NULL"
+            .to_string();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut n = 0usize;
+        if let Some(term) = text_like {
+            n += 1;
+            sql.push_str(&format!(" AND text_content LIKE ?{n} ESCAPE '\\'"));
+            params.push(Box::new(format!(
+                "%{}%",
+                term.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            )));
+        }
+        if let Some(from) = date_from {
+            n += 1;
+            sql.push_str(&format!(
+                " AND date(datetime(created_at, 'localtime')) >= ?{n}"
+            ));
+            params.push(Box::new(from.to_string()));
+        }
+        if let Some(to) = date_to {
+            n += 1;
+            sql.push_str(&format!(
+                " AND date(datetime(created_at, 'localtime')) <= ?{n}"
+            ));
+            params.push(Box::new(to.to_string()));
+        }
+        n += 1;
+        sql.push_str(&format!(" ORDER BY pinned DESC, id {order} LIMIT ?{n}"));
+        params.push(Box::new(limit as i64));
+        let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
             Err(_) => return vec![],
         };
-        stmt.query_map(params![limit as i64], |row| {
-            Ok((
-                row.get::<_, String>(0).unwrap_or_default(),
-                row.get::<_, String>(1).unwrap_or_default(),
-                row.get::<_, bool>(2).unwrap_or(false),
-            ))
-        })
+        stmt.query_map(
+            params_from_iter(params.iter().map(|p| p as &dyn rusqlite::ToSql)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0).unwrap_or_default(),
+                    row.get::<_, String>(1).unwrap_or_default(),
+                    row.get::<_, bool>(2).unwrap_or(false),
+                    row.get::<_, i64>(3).unwrap_or(0),
+                ))
+            },
+        )
         .ok()
         .map(|m| m.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
@@ -154,30 +207,88 @@ impl Database {
         new_state
     }
 
-    /// Clipboard image history: `(path, width, height, created_at, pinned)`,
-    /// pinned entries first, then newest first.
-    pub fn load_clipboard_images(&self, limit: usize) -> Vec<(String, u32, u32, String, bool)> {
+    /// Clipboard image history: `(path, width, height, created_at, pinned, id)`,
+    /// pinned entries first, then newest first. (Test helper; the provider
+    /// uses [`Self::load_clipboard_images_filtered`].)
+    #[cfg(test)]
+    pub fn load_clipboard_images(
+        &self,
+        limit: usize,
+    ) -> Vec<(String, u32, u32, String, bool, i64)> {
+        self.load_clipboard_images_filtered(limit, None, None, true)
+    }
+
+    /// Clipboard image history with an optional local-date-range filter (see
+    /// [`Self::local_date`]) and sort direction.
+    pub fn load_clipboard_images_filtered(
+        &self,
+        limit: usize,
+        date_from: Option<&str>,
+        date_to: Option<&str>,
+        newest_first: bool,
+    ) -> Vec<(String, u32, u32, String, bool, i64)> {
         let conn = match self.conn.lock() {
             Ok(c) => c,
             Err(_) => return vec![],
         };
-        let mut stmt = match conn.prepare(
-            "SELECT path, width, height, created_at, pinned FROM clipboard_images ORDER BY pinned DESC, id DESC LIMIT ?1"
-        ) {
+        let order = if newest_first { "DESC" } else { "ASC" };
+        let mut sql =
+            "SELECT path, width, height, created_at, pinned, id FROM clipboard_images".to_string();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut n = 0usize;
+        if let Some(from) = date_from {
+            n += 1;
+            sql.push_str(&format!(
+                " WHERE date(datetime(created_at, 'localtime')) >= ?{n}"
+            ));
+            params.push(Box::new(from.to_string()));
+        }
+        if let Some(to) = date_to {
+            n += 1;
+            sql.push_str(&format!(
+                " AND date(datetime(created_at, 'localtime')) <= ?{n}"
+            ));
+            params.push(Box::new(to.to_string()));
+        }
+        n += 1;
+        sql.push_str(&format!(" ORDER BY pinned DESC, id {order} LIMIT ?{n}"));
+        params.push(Box::new(limit as i64));
+        let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
             Err(_) => return vec![],
         };
-        stmt.query_map(params![limit as i64], |row| {
-            Ok((
-                row.get::<_, String>(0).unwrap_or_default(),
-                row.get::<_, u32>(1).unwrap_or(0),
-                row.get::<_, u32>(2).unwrap_or(0),
-                row.get::<_, String>(3).unwrap_or_default(),
-                row.get::<_, bool>(4).unwrap_or(false),
-            ))
-        })
+        stmt.query_map(
+            params_from_iter(params.iter().map(|p| p as &dyn rusqlite::ToSql)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0).unwrap_or_default(),
+                    row.get::<_, u32>(1).unwrap_or(0),
+                    row.get::<_, u32>(2).unwrap_or(0),
+                    row.get::<_, String>(3).unwrap_or_default(),
+                    row.get::<_, bool>(4).unwrap_or(false),
+                    row.get::<_, i64>(5).unwrap_or(0),
+                ))
+            },
+        )
         .ok()
         .map(|m| m.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// The local calendar date (`YYYY-MM-DD`) `days_offset` days from today,
+    /// computed by SQLite so no date library is needed. `0` = today,
+    /// `-1` = yesterday, `-7` = a week ago.
+    pub fn local_date(&self, days_offset: i64) -> String {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return String::new(),
+        };
+        let modifier = format!("{days_offset:+} days");
+        conn.query_row(
+            "SELECT date('now', 'localtime', ?1)",
+            params![modifier],
+            |row| row.get(0),
+        )
         .unwrap_or_default()
     }
 
@@ -520,7 +631,7 @@ mod tests {
         assert!(entries[1].0.contains("second"));
         assert!(entries[2].0.contains("first"));
         // Nothing is pinned by default
-        assert!(entries.iter().all(|(_, _, pinned)| !pinned));
+        assert!(entries.iter().all(|(_, _, pinned, _)| !pinned));
     }
 
     #[test]
@@ -574,7 +685,7 @@ mod tests {
         let entries = db.load_clipboard(100);
         assert_eq!(entries[0].0, "item 7", "pinned entry first");
         assert!(entries[0].2, "pinned flag set");
-        assert!(entries.iter().any(|(t, _, _)| t == "item 7"));
+        assert!(entries.iter().any(|(t, _, _, _)| t == "item 7"));
     }
 
     #[test]

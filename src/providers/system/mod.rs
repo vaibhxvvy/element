@@ -224,7 +224,11 @@ impl SearchProvider for SystemProvider {
                 let png = encode_png(&rgba, w, h).map_err(err)?;
                 crate::platform::set_clipboard_screenshot(&dib, &png)
                     .map_err(ElementError::Other)?;
-                save_screenshot_png(&png).map(|_| ()).map_err(err)
+                let saved = save_screenshot_png(&png).map_err(err)?;
+                crate::platform::notify_screenshot_captured(format!(
+                    "Screenshot captured \u{2014} pasted to clipboard\n{saved}"
+                ));
+                Ok(())
             }
             "volume:show" => Ok(()),
             action if action.starts_with("volume:") => {

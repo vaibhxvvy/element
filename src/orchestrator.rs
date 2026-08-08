@@ -70,6 +70,9 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     pub fn new(config: Arc<Config>, db: Arc<Database>) -> Self {
+        // Seed the clipboard sort direction; the settings panel updates it
+        // live without reloading the config Arc.
+        crate::providers::clipboard::set_newest_first(config.clipboard_newest_first);
         let mut registry = ProviderRegistry::new();
         registry.add(Box::new(crate::providers::apps::AppsProvider::new(
             config.search_dirs.clone(),

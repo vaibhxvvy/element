@@ -386,6 +386,17 @@ extern "system" fn tray_wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: i
             }
             0
         }
+        crate::platform::WM_APP_SCREENSHOT_DONE => {
+            // A screenshot capture finished; wparam owns a boxed String body.
+            let body = if wparam != 0 {
+                unsafe { *Box::from_raw(wparam as *mut String) }
+            } else {
+                String::new()
+            };
+            crate::platform::show_toast("Element", &body);
+            set_ui_notice(body);
+            0
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -1478,6 +1489,7 @@ pub fn main() -> iced::Result {
                         autostart: startup_config.autostart,
                         file_index_depth: startup_config.file_index_depth,
                         file_index_entries: startup_config.file_index_entries,
+                        clipboard_newest_first: startup_config.clipboard_newest_first,
                     },
                 },
                 iced::Task::none(),

@@ -3,6 +3,9 @@
 ## v1.4.0 (unreleased)
 
 ### Added
+- Clipboard history order setting: `clipboard_newest_first` in config + "Clipboard order" picker in the settings panel, applied live
+- Clipboard history search: `clip today` / `clip yesterday` / `clip 2026-08-05` / `clip last7d` filter by local date, `clip` + text filters to entries containing the text, `sort:new` / `sort:old` override the order
+- `screenshot` shows a toast ("Screenshot captured — pasted to clipboard") via the tray window
 - Everyday quick actions in the system provider:
   - `volume 40` / `mute` — set the system volume (0-100); bare `volume` shows the current level
   - `screen off` — turn the display off without sleeping
@@ -22,6 +25,7 @@
 - `screenshot` now encodes the frame once — the PNG written to `Pictures\Screenshots` is the same buffer placed on the clipboard
 
 ### Fixed
+- Clipboard history ordered by capture: two rows captured within the same second used to tie on `created_at` and fall back to alphabetical order, so the newest entry could land second
 - Clipboard images never appeared in history: the watcher bailed out (`continue`) whenever the clipboard held an image instead of text, so screenshots and copied pictures were never captured
 - `screenshot` stuttered before producing output — two full-screen PNG encodes ran back to back (clipboard + file)
 

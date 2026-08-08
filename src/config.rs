@@ -15,6 +15,8 @@ pub struct Config {
     /// Empty = default to the user home folder.
     pub file_search_dirs: Vec<String>,
     pub clipboard_max_entries: u32,
+    /// Clipboard history order: newest first (true) or oldest first (false).
+    pub clipboard_newest_first: bool,
     /// Launch Element automatically when Windows starts.
     /// Defaults to true; missing in older config.toml files.
     pub autostart: bool,
@@ -40,6 +42,7 @@ impl Default for Config {
             search_dirs: vec![],
             file_search_dirs: vec![],
             clipboard_max_entries: 100,
+            clipboard_newest_first: true,
             autostart: true,
             accent: "#569cd4".into(),
             file_index_depth: 14,
