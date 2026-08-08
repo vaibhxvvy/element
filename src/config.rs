@@ -33,7 +33,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hotkey: "Alt+Space".into(),
-            window_width: 580.0,
+            window_width: 960.0,
             window_height: 420.0,
             debounce_delay_ms: 150,
             search_url: "https://duckduckgo.com/search?q=%s".into(),
@@ -193,7 +193,7 @@ mod tests {
     fn config_missing_autostart_defaults_true() {
         let toml_str = r#"
 hotkey = "Alt+Space"
-window_width = 580.0
+window_width = 960.0
 window_height = 420.0
 debounce_delay_ms = 150
 search_url = "https://duckduckgo.com/search?q=%s"

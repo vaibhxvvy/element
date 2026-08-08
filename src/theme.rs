@@ -64,9 +64,11 @@ pub const TEXT_ERROR: Color = Color::from_rgb(1.0, 100.0 / 255.0, 100.0 / 255.0)
 pub const BORDER: Color = Color::from_rgb(77.0 / 255.0, 77.0 / 255.0, 77.0 / 255.0);
 
 // --- Sizing ---
-pub const RESULT_HEIGHT: f32 = 42.0;
-pub const ICON_SIZE: f32 = 18.0;
-pub const INPUT_PADDING_VERTICAL: f32 = 10.0;
+/// Searchbar and each result row are equal; footer takes the remainder.
+/// Derived from the window ratio: searchbar + 1 result + footer = width / 4.
+pub const RESULT_HEIGHT: f32 = (WINDOW_WIDTH / 4.0 - FOOTER_HEIGHT) / 2.0;
+pub const ICON_SIZE: f32 = 32.0;
+pub const INPUT_PADDING_VERTICAL: f32 = 35.0;
 pub const INPUT_PADDING_SIDES: f32 = 12.0;
 pub const HEADER_PADDING_VERTICAL: f32 = 0.0;
 pub const CONTENT_PADDING_SIDES: f32 = 12.0;
@@ -74,16 +76,19 @@ pub const SPACING_SM: f32 = 2.0;
 pub const SPACING_MD: f32 = 8.0;
 
 // --- Layout ---
-pub const MIN_WINDOW_HEIGHT: f32 = 52.0;
+/// Fixed launcher width (960 px).
+pub const WINDOW_WIDTH: f32 = 960.0;
+/// Searchbar + 1 result + footer at the 100:25 width ratio.
+pub const TOTAL_ONE_RESULT_HEIGHT: f32 = WINDOW_WIDTH / 4.0;
+pub const MIN_WINDOW_HEIGHT: f32 = TOTAL_ONE_RESULT_HEIGHT;
 pub const MAX_WINDOW_HEIGHT: f32 = 500.0;
-pub const SEARCH_BAR_HEIGHT: f32 = 48.0;
-pub const BOTTOM_PADDING: f32 = 8.0;
-pub const STATUS_HEIGHT: f32 = 24.0;
+pub const SEARCH_BAR_HEIGHT: f32 = RESULT_HEIGHT;
+pub const FOOTER_HEIGHT: f32 = 56.0;
 pub const MAX_VISIBLE_RESULTS: usize = 10;
 
 // --- Typography ---
-pub const TITLE_SIZE: f32 = 13.0;
-pub const SUBTITLE_SIZE: f32 = 11.0;
+pub const TITLE_SIZE: f32 = 16.0;
+pub const SUBTITLE_SIZE: f32 = 13.0;
 
 // --- Borders ---
 /// Input field corner radius

@@ -8,7 +8,7 @@ Read it first before making any changes.
 Element is a **global-hotkey launcher for Windows** — press `Alt+Space` for a floating
 search bar. Type to fuzzy-find apps and files, calculate math, search emoji, browse
 clipboard history, run system commands, or search the web. Built in Rust with
-Iced 0.13 (wgpu).
+Iced 0.14 (wgpu).
 
 Runs in the system tray. Zero UI until summoned.
 
@@ -109,10 +109,16 @@ src/
 │   │                 #   Image rows: kind "clipboard-image", 64×64 thumb PNG
 │   │                 #   decoded into icon_rgba; Enter restores the image to
 │   │                 #   the clipboard as CF_DIB (rgba_to_dib + set_clipboard_bitmap).
-│   ├── system/       # System commands. should_run: shutdown/restart/reboot(alias)/
-│   │   └── mod.rs    #   sleep/lock at query start (word boundary, case-insensitive).
-│   │                 #   Score 300, priority 9. shutdown.exe for off/restart;
-│   │                 #   platform::lock_workstation / suspend_system for lock/sleep.
+│   ├── system/       # System commands + everyday quick actions. should_run:
+│   │   └── mod.rs    #   shutdown/restart/reboot(alias)/sleep/lock/volume/mute/
+│   │                 #   screen off/timer/password/screenshot at command start
+│   │                 #   (word boundary, case-insensitive). Score 300, priority 9.
+│   │                 #   shutdown.exe for off/restart; platform::lock_workstation /
+│   │                 #   suspend_system for lock/sleep; waveOut* for volume;
+│   │                 #   GDI BitBlt for screenshot (all-monitor capture); timers
+│   │                 #   post WM_APP_TIMER_DONE (0x8001) to the tray window which
+│   │                 #   shows a balloon; BCryptGenRandom for passwords
+│   │                 #   (kind "password" keeps the window open w/ feedback).
 │   ├── files/        # Raycast-style file search. Runs on "file"/"folder" prefixes
 │   │                 # AND on bare queries (≥2 chars, not emoji/clipboard/math
 │   │                 # domains) so typing ".png" or "pvt" finds files directly.
@@ -392,7 +398,9 @@ Window and tray FFI lives in `main.rs`. Shortcut resolution stays isolated in
 `providers/apps/icons.rs`; generic icon extraction (`IShellItemImageFactory`)
 lives in `providers/icon.rs`, where COM is initialized only for the helper call.
 Simple Win32 helpers (clipboard file copy via CF_HDROP, lock workstation,
-suspend system) live in `src/platform.rs` behind safe wrappers.
+suspend system, system volume via waveOut*, screen capture via GDI,
+screen-off, BCryptGenRandom passwords, tray-hwnd registration + timer
+notifications) live in `src/platform.rs` behind safe wrappers.
 
 Do not scatter `#[cfg(target_os = "windows")]` through providers or UI code.
 If a provider needs platform-specific logic, isolate it behind a helper.

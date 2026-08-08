@@ -38,6 +38,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "brandkit\windows\element.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "sounds\*.mp3"; DestDir: "{app}\sounds"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

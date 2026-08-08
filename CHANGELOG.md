@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.4.0 (unreleased)
+
+### Added
+- Everyday quick actions in the system provider:
+  - `volume 40` / `mute` — set the system volume (0-100); bare `volume` shows the current level
+  - `screen off` — turn the display off without sleeping
+  - `timer 10` / `timer 5m` / `timer 30s` / `timer 1h` — countdown with a tray balloon notification when it finishes
+  - `password` / `password 24` — cryptographically random password (BCryptGenRandom) copied to the clipboard
+  - `screenshot` — full virtual desktop capture (all monitors) to the clipboard as CF_DIB
+- `future.md` — feature roadmap & tracker (checkbox per feature, built-in version, blocked reason)
+- Live smoke tests for volume roundtrip and screen capture (`--ignored`)
+
+### Changed
+- System provider now parses parameterized commands (`volume:`, `timer:`, `password:` actions)
+- Volume now uses Core Audio (`IAudioEndpointVolume`) — `waveOut` only touched a legacy mixer that doesn't change the real Windows volume (fixed "volume 20" not working)
+- Tray balloons: fixed `NOTIFYICONDATAW` (missing `dwTimeout` shifted all balloon fields) + `NIM_SETVERSION` (NOTIFYICON_VERSION_4) so Win10/11 show them, plus a `MessageBeep` fallback
+- Screen off debounced (2 s) and switched to `SendMessageTimeoutW` (single, synchron deliver, abort-if-hung) to stop on/off flicker
+- Clipboard writes (`set_clipboard_bitmap`, new `set_clipboard_text`) retry up to 500 ms while the watcher holds the clipboard open
+- Migrated to Iced 0.14 (wgpu): boot-first `iced::application`, `widget::operation` tasks for focus/scroll, unified `widget::Id`, `event::listen_with` subscription (0.14's TextInput captures Escape, so ignored-only keyboard events are no longer enough)
+- `screenshot` now encodes the frame once — the PNG written to `Pictures\Screenshots` is the same buffer placed on the clipboard
+
+### Fixed
+- Clipboard images never appeared in history: the watcher bailed out (`continue`) whenever the clipboard held an image instead of text, so screenshots and copied pictures were never captured
+- `screenshot` stuttered before producing output — two full-screen PNG encodes ran back to back (clipboard + file)
+
 ## v1.0.0 (2026-07-29)
 
 ### Added

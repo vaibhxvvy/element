@@ -13,9 +13,7 @@ use crate::debug_log;
 use crate::orchestrator::{Orchestrator, Outcome, Request};
 use crate::providers::SearchResult;
 use crate::theme;
-use crate::{
-    EXIT_REQUESTED, HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED, WINDOW_WIDTH,
-};
+use crate::{EXIT_REQUESTED, HIDE_REQUESTED, HOTKEY_TRIGGERED, RESIZE_HEIGHT, RESIZE_REQUESTED};
 
 const RESULTS_SCROLL_ID: &str = "results";
 const SETTINGS_URL_ID: &str = "settings-url";
@@ -23,8 +21,6 @@ const HELP_SCROLL_ID: &str = "help";
 
 const SETTINGS_WINDOW_HEIGHT: f32 = 460.0;
 const HELP_WINDOW_HEIGHT: f32 = 500.0;
-const WIDTH_MIN: f32 = 400.0;
-const WIDTH_MAX: f32 = 900.0;
 const DEPTH_MIN: f32 = 4.0;
 const DEPTH_MAX: f32 = 32.0;
 const ENTRIES_MIN: f32 = 10_000.0;
@@ -45,7 +41,6 @@ pub enum Mode {
 #[derive(Debug, Clone)]
 pub struct SettingsDraft {
     pub search_url: String,
-    pub window_width: f32,
     pub accent: String,
     pub autostart: bool,
     pub file_index_depth: usize,
@@ -57,7 +52,6 @@ pub struct SettingsDraft {
 fn draft_from_config(cfg: &Config) -> SettingsDraft {
     SettingsDraft {
         search_url: cfg.search_url.clone(),
-        window_width: cfg.window_width,
         accent: cfg.accent.clone(),
         autostart: cfg.autostart,
         file_index_depth: cfg.file_index_depth,
@@ -76,7 +70,6 @@ pub enum Message {
     SettingsBack,
     HelpBack,
     SearchUrlChanged(String),
-    WidthChanged(f32),
     AccentChanged(String),
     AutostartChanged(bool),
     FileDepthChanged(f32),
@@ -102,14 +95,14 @@ fn scroll_to_selected(selected_index: i32) -> iced::Task<Message> {
         return iced::Task::none();
     }
     let y = selected_index as f32 * theme::RESULT_HEIGHT;
-    scrollable::scroll_to(
-        scrollable::Id::new(RESULTS_SCROLL_ID),
+    iced::widget::operation::scroll_to(
+        iced::widget::Id::new(RESULTS_SCROLL_ID),
         scrollable::AbsoluteOffset { x: 0.0, y },
     )
 }
 
-fn update_window_height(results: &[SearchResult], has_status: bool) {
-    let h = adaptive_height(results, has_status);
+fn update_window_height(results: &[SearchResult]) {
+    let h = adaptive_height(results);
     RESIZE_HEIGHT.store(h as u32, Ordering::Relaxed);
     RESIZE_REQUESTED.store(true, Ordering::SeqCst);
 }
@@ -122,7 +115,7 @@ fn search(app: &mut ElementApp, query: &str) -> iced::Task<Message> {
     app.selected_index = if app.results.is_empty() { -1 } else { 0 };
     app.search_revision = app.engine.revision();
     refresh_hint(app);
-    update_window_height(&app.results, app.status.is_some() || app.hint.is_some());
+    update_window_height(&app.results);
     scroll_to_selected(app.selected_index)
 }
 
@@ -199,7 +192,7 @@ fn run_file_action(
         }
         _ => {}
     }
-    update_window_height(&app.results, true);
+    update_window_height(&app.results);
     iced::Task::none()
 }
 
@@ -221,19 +214,25 @@ fn activate_result(app: &mut ElementApp, index: usize) -> iced::Task<Message> {
         Outcome::Activated(Ok(()))
             if matches!(
                 result.kind.as_str(),
-                "calc" | "emoji" | "clipboard" | "clipboard-image" | "snippet" | "color"
+                "calc"
+                    | "emoji"
+                    | "clipboard"
+                    | "clipboard-image"
+                    | "snippet"
+                    | "color"
+                    | "password"
             ) =>
         {
             app.status = Some("Copied to clipboard".into());
             app.hint = None;
-            update_window_height(&app.results, true);
+            update_window_height(&app.results);
         }
         Outcome::Activated(Ok(())) => HIDE_REQUESTED.store(true, Ordering::SeqCst),
         Outcome::Activated(Err(error)) => {
             eprintln!("[element] failed to activate '{}': {error}", result.title);
             app.status = Some(format!("Could not open {}", result.title));
             app.hint = None;
-            update_window_height(&app.results, true);
+            update_window_height(&app.results);
         }
         Outcome::Results(_) | Outcome::Refreshed(_) | Outcome::Pinned(_) => {}
     }
@@ -264,7 +263,6 @@ fn apply_file_limits(app: &ElementApp) {
 fn save_settings(app: &ElementApp) {
     let mut cfg = Config::load();
     cfg.search_url = app.settings.search_url.trim().to_string();
-    cfg.window_width = app.settings.window_width;
     cfg.accent = app.settings.accent.clone();
     cfg.autostart = app.settings.autostart;
     cfg.file_index_depth = app.settings.file_index_depth;
@@ -280,7 +278,10 @@ fn leave_settings(app: &mut ElementApp) -> iced::Task<Message> {
     app.status = None;
     app.hint = None;
     let search_task = search(app, "");
-    iced::Task::batch(vec![text_input::focus("search"), search_task])
+    iced::Task::batch(vec![
+        iced::widget::operation::focus::<Message>("search"),
+        search_task,
+    ])
 }
 
 fn open_help(app: &mut ElementApp) {
@@ -298,14 +299,10 @@ fn leave_help(app: &mut ElementApp) -> iced::Task<Message> {
     app.status = None;
     app.hint = None;
     let search_task = search(app, "");
-    iced::Task::batch(vec![text_input::focus("search"), search_task])
-}
-
-fn apply_width(app: &mut ElementApp, width: f32) {
-    app.settings.window_width = width;
-    WINDOW_WIDTH.store(width as u32, Ordering::Relaxed);
-    RESIZE_HEIGHT.store(SETTINGS_WINDOW_HEIGHT as u32, Ordering::Relaxed);
-    RESIZE_REQUESTED.store(true, Ordering::SeqCst);
+    iced::Task::batch(vec![
+        iced::widget::operation::focus::<Message>("search"),
+        search_task,
+    ])
 }
 
 fn apply_accent(app: &mut ElementApp, hex: &str) {
@@ -321,10 +318,6 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
         Message::HelpBack => return leave_help(app),
         Message::SearchUrlChanged(url) => {
             app.settings.search_url = url;
-            return iced::Task::none();
-        }
-        Message::WidthChanged(width) => {
-            apply_width(app, width);
             return iced::Task::none();
         }
         Message::AccentChanged(hex) => {
@@ -349,9 +342,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
         Message::ResetSettings => {
             app.settings = draft_from_config(&Config::default());
             let accent = app.settings.accent.clone();
-            let width = app.settings.window_width;
             apply_accent(app, &accent);
-            apply_width(app, width);
             crate::set_autostart(app.settings.autostart);
             apply_file_limits(app);
             debug_log!("UI: settings reset to defaults");
@@ -384,7 +375,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                     _ => {}
                 }
                 app.hint = None;
-                update_window_height(&app.results, true);
+                update_window_height(&app.results);
             }
             return iced::Task::none();
         }
@@ -481,6 +472,11 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 debug_log!("UI: EXIT_REQUESTED – exiting Iced application");
                 return iced::exit();
             }
+            if let Some(notice) = crate::take_ui_notice() {
+                app.status = Some(notice);
+                app.hint = None;
+                update_window_height(&app.results);
+            }
             if HOTKEY_TRIGGERED.swap(false, Ordering::SeqCst) {
                 debug_log!("UI: HOTKEY_TRIGGERED received – refreshing and focusing input");
                 if let Outcome::Refreshed(rev) = app.engine.handle(Request::Refresh) {
@@ -490,7 +486,10 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
                 app.status = None;
                 app.hint = None;
                 let search_task = search(app, "");
-                return iced::Task::batch(vec![text_input::focus("search"), search_task]);
+                return iced::Task::batch(vec![
+                    iced::widget::operation::focus::<Message>("search"),
+                    search_task,
+                ]);
             }
             if app.engine.revision() != app.search_revision {
                 let query = app.input.clone();
@@ -502,6 +501,7 @@ pub fn update(app: &mut ElementApp, message: Message) -> iced::Task<Message> {
 }
 
 pub fn view(app: &ElementApp) -> Element<'_, Message> {
+    crate::ui_tick();
     if app.mode == Mode::Settings {
         return settings_view(app);
     }
@@ -530,34 +530,34 @@ pub fn view(app: &ElementApp) -> Element<'_, Message> {
     }
 
     let scroll = iced::widget::Scrollable::new(list)
-        .id(scrollable::Id::new(RESULTS_SCROLL_ID))
+        .id(iced::widget::Id::new(RESULTS_SCROLL_ID))
         .height(Length::Shrink)
         .width(Length::Fill)
         .style(element_scrollable_style);
 
-    let mut content = Column::new().push(header);
-    if let Some(status) = &app.status {
-        content = content.push(
-            container(
-                text(status)
-                    .color(theme::TEXT_ERROR)
-                    .size(theme::SUBTITLE_SIZE),
-            )
-            .padding([theme::SPACING_SM, theme::CONTENT_PADDING_SIDES])
-            .height(theme::STATUS_HEIGHT),
-        );
-    } else if let Some(hint) = &app.hint {
-        content = content.push(
-            container(
-                text(hint)
-                    .color(theme::TEXT_MUTED)
-                    .size(theme::SUBTITLE_SIZE),
-            )
-            .padding([theme::SPACING_SM, theme::CONTENT_PADDING_SIDES])
-            .height(theme::STATUS_HEIGHT),
-        );
-    }
-    let content = content.push(scroll).width(Length::Fill);
+    // Footer: fixed 56 px strip — shows the activation status message when
+    // present, otherwise the contextual hint for the selected result.
+    let footer_text = if let Some(status) = &app.status {
+        text(status)
+            .color(theme::TEXT_ERROR)
+            .size(theme::SUBTITLE_SIZE)
+    } else {
+        let hint = app.hint.as_deref().unwrap_or("");
+        text(hint)
+            .color(theme::TEXT_MUTED)
+            .size(theme::SUBTITLE_SIZE)
+    };
+    let footer = container(footer_text)
+        .padding([0.0, theme::CONTENT_PADDING_SIDES])
+        .width(Length::Fill)
+        .height(theme::FOOTER_HEIGHT)
+        .align_y(iced::Alignment::Center)
+        .style(|_: &Theme| iced::widget::container::Style {
+            background: Some(theme::BG_INPUT.into()),
+            ..Default::default()
+        });
+
+    let content = column![header, scroll, footer].width(Length::Fill);
 
     container(content)
         .width(Length::Fill)
@@ -568,7 +568,14 @@ pub fn view(app: &ElementApp) -> Element<'_, Message> {
 
 pub fn subscription(_app: &ElementApp) -> Subscription<Message> {
     Subscription::batch(vec![
-        iced::keyboard::on_key_press(|key, mods| Some(Message::KeyPressed(key, mods))),
+        iced::event::listen_with(|event, _status, _window_id| match event {
+            iced::event::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                ..
+            }) => Some(Message::KeyPressed(key, modifiers)),
+            _ => None,
+        }),
         iced::time::every(Duration::from_millis(30)).map(|_| Message::Tick),
     ])
 }
@@ -665,23 +672,6 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
         .padding([8.0, theme::CONTENT_PADDING_SIDES])
         .align_y(iced::Alignment::Center);
 
-    let width_value = text(format!("{} px", app.settings.window_width.round() as u32))
-        .color(theme::TEXT_PRIMARY)
-        .size(theme::SUBTITLE_SIZE)
-        .width(Length::FillPortion(1));
-    let width = row![
-        slider(
-            WIDTH_MIN..=WIDTH_MAX,
-            app.settings.window_width,
-            Message::WidthChanged
-        )
-        .width(Length::FillPortion(3)),
-        width_value,
-    ]
-    .spacing(theme::SPACING_MD)
-    .align_y(iced::Alignment::Center);
-    let width_row = settings_row("Window width", width.into());
-
     let url_input = text_input::TextInput::new(
         "https://duckduckgo.com/search?q=%s",
         &app.settings.search_url,
@@ -729,7 +719,8 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
     .align_y(iced::Alignment::Center);
     let accent_row = settings_row("Accent", swatches.into());
 
-    let autostart = checkbox("Run Element at startup", app.settings.autostart)
+    let autostart = checkbox(app.settings.autostart)
+        .label("Run Element at startup")
         .on_toggle(Message::AutostartChanged)
         .text_size(theme::TITLE_SIZE);
     let autostart_row = settings_row("Startup", autostart.into());
@@ -793,7 +784,6 @@ fn settings_view(app: &ElementApp) -> Element<'_, Message> {
 
     let list = column![
         header,
-        width_row,
         url_row,
         accent_row,
         autostart_row,
@@ -902,7 +892,7 @@ fn help_view() -> Element<'static, Message> {
     }
 
     let scroll = iced::widget::Scrollable::new(list)
-        .id(scrollable::Id::new(HELP_SCROLL_ID))
+        .id(iced::widget::Id::new(HELP_SCROLL_ID))
         .height(Length::Fill)
         .width(Length::Fill)
         .style(element_scrollable_style);
@@ -921,17 +911,10 @@ fn help_view() -> Element<'static, Message> {
         .into()
 }
 
-fn adaptive_height(results: &[SearchResult], has_status: bool) -> f32 {
+fn adaptive_height(results: &[SearchResult]) -> f32 {
     let count = (results.len().min(theme::MAX_VISIBLE_RESULTS)) as f32;
-    let status_height = if has_status {
-        theme::STATUS_HEIGHT
-    } else {
-        0.0
-    };
-    let h = theme::SEARCH_BAR_HEIGHT
-        + status_height
-        + count * theme::RESULT_HEIGHT
-        + theme::BOTTOM_PADDING;
+    // Searchbar = result row; footer fixed; base = 25% of width.
+    let h = theme::SEARCH_BAR_HEIGHT + count * theme::RESULT_HEIGHT + theme::FOOTER_HEIGHT;
     h.clamp(theme::MIN_WINDOW_HEIGHT, theme::MAX_WINDOW_HEIGHT)
 }
 
@@ -957,7 +940,7 @@ fn element_scrollable_style(_theme: &Theme, _status: scrollable::Status) -> scro
             background: None,
             border: Default::default(),
             scroller: scrollable::Scroller {
-                color: Color::TRANSPARENT,
+                background: Color::TRANSPARENT.into(),
                 border: Default::default(),
             },
         },
@@ -965,11 +948,17 @@ fn element_scrollable_style(_theme: &Theme, _status: scrollable::Status) -> scro
             background: None,
             border: Default::default(),
             scroller: scrollable::Scroller {
-                color: Color::TRANSPARENT,
+                background: Color::TRANSPARENT.into(),
                 border: Default::default(),
             },
         },
         gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: Color::TRANSPARENT.into(),
+            border: Default::default(),
+            shadow: iced::Shadow::default(),
+            icon: Color::TRANSPARENT,
+        },
     }
 }
 

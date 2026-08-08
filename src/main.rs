@@ -28,6 +28,16 @@ pub(crate) static RESIZE_HEIGHT: AtomicU32 = AtomicU32::new(56);
 pub(crate) static RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub(crate) static WINDOW_WIDTH: AtomicU32 = AtomicU32::new(580);
 pub(crate) static WINDOW_FOUND: AtomicBool = AtomicBool::new(false);
+/// Monotonic-ms heartbeat bumped by the UI event loop on every render/view.
+/// A watchdog thread logs a stall when this goes stale — so an unresponsive
+/// window leaves evidence instead of dying silently.
+pub(crate) static UI_ALIVE_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Called from the UI render path each frame; the watchdog uses it to detect
+/// a wedged event loop.
+pub(crate) fn ui_tick() {
+    UI_ALIVE_MS.store(GetTickCount(), Ordering::Relaxed);
+}
 
 /// Our intended visibility — more reliable than racing IsWindowVisible.
 #[cfg(target_os = "windows")]
@@ -51,6 +61,26 @@ static AUTO_HIDDEN_AT: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "windows")]
 static LAUNCHER_HAD_FOCUS: AtomicBool = AtomicBool::new(false);
 
+/// One-shot message channel from the background thread to the UI: e.g. the
+/// timer completion notice. The UI drains it on its 30 ms tick.
+static UI_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Post a notice the UI will display on its next tick (replaces any pending).
+pub(crate) fn set_ui_notice(text: String) {
+    if let Ok(mut slot) = UI_NOTICE.lock() {
+        *slot = Some(text);
+    }
+}
+
+/// Take (and clear) the pending notice, if any.
+pub(crate) fn take_ui_notice() -> Option<String> {
+    if let Ok(mut slot) = UI_NOTICE.lock() {
+        slot.take()
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "windows")]
 const FOCUS_LOSS_GRACE_MS: u32 = 250;
 #[cfg(target_os = "windows")]
@@ -64,8 +94,6 @@ const SW_RESTORE: i32 = 9;
 const HWND_TOPMOST: isize = -1;
 #[cfg(target_os = "windows")]
 const SWP_NOSIZE: u32 = 0x0001;
-#[cfg(target_os = "windows")]
-const SWP_NOMOVE: u32 = 0x0002;
 #[cfg(target_os = "windows")]
 const SWP_NOZORDER: u32 = 0x0004;
 #[cfg(target_os = "windows")]
@@ -329,6 +357,35 @@ extern "system" fn tray_wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: i
             PostQuitMessage(0);
             0
         }
+        crate::platform::WM_APP_TIMER_DONE => {
+            // A countdown finished; wparam carries the total seconds.
+            let secs = wparam as u32;
+            let (m, s) = (secs / 60, secs % 60);
+            let notice = if m > 0 {
+                format!("Timer finished — {m} min {s} sec")
+            } else if s > 0 {
+                format!("Timer finished — {s} sec")
+            } else {
+                "Timer finished".to_string()
+            };
+            // 1) Always-visible notification: our own topmost toast window.
+            crate::platform::show_toast("Element", &notice);
+            // The launcher itself does NOT pop up — the toast is the notice.
+            // 2) Set the in-app status line too (visible when the launcher
+            //    is already open); harmless when it is not.
+            set_ui_notice(notice);
+            // 3) The user's mp3 if present, else a system beep.
+            match crate::platform::find_sound_file("oi.mp3") {
+                Some(path) => crate::platform::play_sound_file(path.to_string_lossy().into_owned()),
+                None => {
+                    crate::platform::log_sound_event(
+                        "find_sound_file(oi.mp3) found nothing — beep fallback",
+                    );
+                    let _ = MessageBeepW(0x00000040);
+                }
+            }
+            0
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -417,6 +474,26 @@ extern "system" fn SetForegroundWindow(hWnd: isize) -> i32 {
         fn SetForegroundWindow(hWnd: isize) -> i32;
     }
     unsafe { SetForegroundWindow(hWnd) }
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(clippy::upper_case_acronyms)]
+struct RECT {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// MSDN: GetWindowRect — https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowrect
+#[cfg(target_os = "windows")]
+extern "system" fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowRect(hWnd: isize, lpRect: *mut RECT) -> i32;
+    }
+    unsafe { GetWindowRect(hWnd, lpRect) }
 }
 
 #[cfg(target_os = "windows")]
@@ -609,6 +686,16 @@ extern "system" fn Shell_NotifyIconW(dwMessage: u32, lpData: *mut NOTIFYICONDATA
     unsafe { Shell_NotifyIconW(dwMessage, lpData) }
 }
 
+// MSDN: MessageBeep — https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messagebeep
+#[cfg(target_os = "windows")]
+extern "system" fn MessageBeepW(uType: u32) -> i32 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBeep(uType: u32) -> i32;
+    }
+    unsafe { MessageBeep(uType) }
+}
+
 #[cfg(target_os = "windows")]
 extern "system" fn GetCursorPos(lpPoint: *mut POINT) -> i32 {
     #[link(name = "user32")]
@@ -779,6 +866,7 @@ struct NOTIFYICONDATAW {
     szTip: [u16; 128],
     dwState: u32,
     dwStateMask: u32,
+    dwTimeout: u32,
     szInfo: [u16; 256],
     _uVersion: u32,
     szInfoTitle: [u16; 64],
@@ -1031,9 +1119,9 @@ pub fn main() -> iced::Result {
     }
 
     let config = Arc::new(config::Config::load());
-    WINDOW_WIDTH.store(config.window_width as u32, Ordering::Relaxed);
-    let init_win_size = iced::Size::new(config.window_width, 56.0);
-    debug_log!("config loaded, window_width={}", config.window_width);
+    WINDOW_WIDTH.store(theme::WINDOW_WIDTH as u32, Ordering::Relaxed);
+    let init_win_size = iced::Size::new(theme::WINDOW_WIDTH, 56.0);
+    debug_log!("config loaded, window_width={}", theme::WINDOW_WIDTH);
     theme::apply_config_accent(&config.accent);
 
     #[cfg(target_os = "windows")]
@@ -1073,6 +1161,7 @@ pub fn main() -> iced::Result {
             const WM_QUIT: u32 = 0x0012;
             const PM_REMOVE: u32 = 0x0001;
             const NIM_ADD: u32 = 0;
+            const NIM_SETVERSION: u32 = 4;
             const NIF_MESSAGE: u32 = 1;
             const NIF_ICON: u32 = 2;
             const NIF_TIP: u32 = 4;
@@ -1124,6 +1213,7 @@ pub fn main() -> iced::Result {
                     szTip: [0u16; 128],
                     dwState: 0,
                     dwStateMask: 0,
+                    dwTimeout: 0,
                     szInfo: [0u16; 256],
                     _uVersion: 0,
                     szInfoTitle: [0u16; 64],
@@ -1137,6 +1227,13 @@ pub fn main() -> iced::Result {
                 nid.szTip[..copy_len].copy_from_slice(&tip_utf16[..copy_len]);
                 Shell_NotifyIconW(NIM_ADD, &mut nid);
                 debug_log!("tray icon added (tip='{}')", tip);
+                // NIM_SETVERSION (NOTIFYICON_VERSION_4) makes balloons render
+                // as proper Windows notifications (without it Win10/11 often
+                // silently drops tray balloons).
+                nid.uFlags = 0;
+                nid._uVersion = 4;
+                Shell_NotifyIconW(NIM_SETVERSION, &mut nid);
+                crate::platform::set_tray_hwnd(tray_hwnd);
             }
 
             let mut loop_count = 0u64;
@@ -1205,8 +1302,36 @@ pub fn main() -> iced::Result {
                     if hwnd != 0 {
                         let ww = WINDOW_WIDTH.load(Ordering::Relaxed) as i32;
                         let h = RESIZE_HEIGHT.load(Ordering::Relaxed) as i32;
-                        debug_log!("RESIZE_REQUESTED: SetWindowPos({}x{})", ww, h);
-                        SetWindowPos(hwnd, 0, 0, 0, ww, h, SWP_NOZORDER | SWP_NOMOVE);
+                        // Dedupe: skip SetWindowPos unless size or position
+                        // actually changed. A few redundant calls have been
+                        // observed in a tight loop around slow renders.
+                        let mut rc = RECT {
+                            left: 0,
+                            top: 0,
+                            right: 0,
+                            bottom: 0,
+                        };
+                        GetWindowRect(hwnd, &mut rc);
+                        let cur_w = rc.right - rc.left;
+                        let cur_h = rc.bottom - rc.top;
+                        // Always re-center horizontally — a fixed left edge
+                        // would push a wider window off to the right.
+                        let scr_w = GetSystemMetrics(0);
+                        let x = (scr_w - ww) / 2;
+                        let changed = cur_w != ww || cur_h != h || rc.left != x;
+                        if changed {
+                            debug_log!(
+                                "RESIZE_REQUESTED: SetWindowPos({}x{} -> {}x{} at {})",
+                                cur_w,
+                                cur_h,
+                                ww,
+                                h,
+                                x
+                            );
+                            SetWindowPos(hwnd, 0, x, rc.top, ww, h, SWP_NOZORDER);
+                        } else {
+                            debug_log!("RESIZE_REQUESTED: no-op (already {}x{})", cur_w, cur_h);
+                        }
                     }
                 }
 
@@ -1265,19 +1390,39 @@ pub fn main() -> iced::Result {
             .ok();
     debug_log!("window icon loaded: {}", window_icon.is_some());
 
-    iced::application("Element", ui::update, ui::view)
-        .theme(|_| Theme::Dark)
-        .window(window::Settings {
-            decorations: false,
-            level: window::Level::AlwaysOnTop,
-            size: init_win_size,
-            visible: false,
-            icon: window_icon,
-            ..Default::default()
-        })
-        .subscription(ui::subscription)
-        .run_with(move || {
+    iced::application(
+        move || {
             let db = Arc::new(Database::new());
+            // Watchdog: if the Iced event loop stops bumping UI_ALIVE_TICK
+            // for a while, log a stall marker with surrounding state so a
+            // hang can be diagnosed after the fact.
+            let _ = std::thread::Builder::new()
+                .name("element-watchdog".into())
+                .spawn(move || {
+                    let mut last_stalled = false;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        if EXIT_REQUESTED.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let tick = UI_ALIVE_MS.load(Ordering::Relaxed);
+                        let now = GetTickCount();
+                        // Iced stops redrawing while the window is hidden —
+                        // only flag a stall while the launcher is visible.
+                        let visible = LAUNCHER_SHOWN.load(Ordering::SeqCst)
+                            || HIDE_REQUESTED.load(Ordering::SeqCst);
+                        let stalled = visible && tick != 0 && now.wrapping_sub(tick) > 9000;
+                        if stalled && !last_stalled {
+                            debug_log!(
+                                "WATCHDOG: UI thread unresponsive (tick {}s stale, now={}, tick={})",
+                                (now - tick) / 1000,
+                                now,
+                                tick
+                            );
+                        }
+                        last_stalled = stalled;
+                    }
+                });
             // Background clipboard watcher: polls every ~800 ms and records
             // changes into the history (deduped, trimmed to the configured cap).
             let watcher_db = Arc::clone(&db);
@@ -1293,13 +1438,20 @@ pub fn main() -> iced::Result {
                         if EXIT_REQUESTED.load(Ordering::SeqCst) {
                             break;
                         }
-                        let Ok(Some(text)) = clipboard.as_mut().map(|c| c.get_text()).transpose()
-                        else {
-                            continue;
-                        };
-                        if last_text.as_deref() != Some(text.as_str()) {
-                            last_text = Some(text.clone());
-                            watcher_db.save_clipboard(&text, clip_keep);
+                        let text = clipboard
+                            .as_mut()
+                            .map(|c| c.get_text())
+                            .transpose()
+                            .ok()
+                            .flatten();
+                        if text.as_deref() != last_text.as_deref() {
+                            match text {
+                                Some(t) => {
+                                    last_text = Some(t.clone());
+                                    watcher_db.save_clipboard(&t, clip_keep);
+                                }
+                                None => last_text = None,
+                            }
                         }
                         // Images ride the same poll: bitmaps (DIB / DIBV5 / PNG)
                         // are captured, thumbnailed and recorded in history.
@@ -1307,7 +1459,7 @@ pub fn main() -> iced::Result {
                     }
                 })
                 .ok();
-            let engine = Orchestrator::new(config, db);
+            let engine = Orchestrator::new(config.clone(), db.clone());
             let startup_config = engine.config.clone();
             debug_log!("Iced application started – Orchestrator initialized");
             (
@@ -1322,7 +1474,6 @@ pub fn main() -> iced::Result {
                     mode: ui::Mode::Search,
                     settings: ui::SettingsDraft {
                         search_url: startup_config.search_url.clone(),
-                        window_width: startup_config.window_width,
                         accent: startup_config.accent.clone(),
                         autostart: startup_config.autostart,
                         file_index_depth: startup_config.file_index_depth,
@@ -1331,5 +1482,20 @@ pub fn main() -> iced::Result {
                 },
                 iced::Task::none(),
             )
-        })
+        },
+        ui::update,
+        ui::view,
+    )
+    .title("Element")
+    .theme(Theme::Dark)
+    .window(window::Settings {
+        decorations: false,
+        level: window::Level::AlwaysOnTop,
+        size: init_win_size,
+        visible: false,
+        icon: window_icon,
+        ..Default::default()
+    })
+    .subscription(ui::subscription)
+    .run()
 }
